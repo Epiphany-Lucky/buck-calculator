@@ -11,7 +11,7 @@
 | 附件 | 用途 |
 |---|---|
 | `BuckCalculator-v1.0.0-win-x64.exe` | 直接运行的单文件程序 |
-| `BuckCalculator-v1.0.0-win-x64.zip` | 便携软件包，包含 `BuckCalculator.exe` 和本说明 |
+| `BuckCalculator-v1.0.0-win-x64.zip` | 便携软件包，包含 `BuckCalculator.exe`、本说明和界面预览图 |
 | `SHA256SUMS.txt` | EXE 与 ZIP 的 SHA-256 校验值 |
 
 在 PowerShell 中执行以下命令可查看本地下载文件的校验值，并与 `SHA256SUMS.txt` 比较。

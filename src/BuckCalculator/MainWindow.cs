@@ -270,7 +270,8 @@ public sealed class MainWindow : Window
             Margin = new Thickness(0, 12, 0, 8)
         };
         results.Children.Add(formulas);
-        results.Children.Add(new TextBlock { Text = "BUCK Calculator 1.0.0  ·  Epiphany", FontSize = 11, Foreground = Muted, Margin = new Thickness(2, 14, 0, 4) });
+        string version = typeof(MainWindow).Assembly.GetName().Version?.ToString(3) ?? "1.0.0";
+        results.Children.Add(new TextBlock { Text = $"BUCK Calculator {version}  ·  Epiphany", FontSize = 11, Foreground = Muted, Margin = new Thickness(2, 14, 0, 4) });
         resultScroll.Content = results;
         resultScroll.HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled;
         return resultScroll;

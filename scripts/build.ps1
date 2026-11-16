@@ -64,6 +64,18 @@ try {
     $releaseZip = Join-Path $artifactsDirectory "$releaseName.zip"
     Copy-Item -LiteralPath $publishedExe -Destination $releaseExe -Force
     Compress-Archive -LiteralPath @($publishedExe, $readmeFile) -DestinationPath $releaseZip -Force
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $archive = [System.IO.Compression.ZipFile]::Open($releaseZip, [System.IO.Compression.ZipArchiveMode]::Update)
+    try {
+        $screenshotFile = Join-Path $smokeDirectory 'desktop-default.png'
+        if ($SkipSmokeTest) { $screenshotFile = Join-Path $projectRoot 'docs\screenshot.png' }
+        [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
+            $archive, $screenshotFile, 'docs/screenshot.png',
+            [System.IO.Compression.CompressionLevel]::Optimal) | Out-Null
+    }
+    finally {
+        $archive.Dispose()
+    }
 
     $hashLines = foreach ($releaseFile in @($releaseExe, $releaseZip)) {
         $hash = (Get-FileHash -LiteralPath $releaseFile -Algorithm SHA256).Hash.ToLowerInvariant()
