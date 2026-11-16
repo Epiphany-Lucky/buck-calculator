@@ -44,6 +44,16 @@ public sealed class UpdateService
         timeout.CancelAfter(TimeSpan.FromSeconds(40));
         try
         {
+            using var manifestResponse = await SendAsync(new Uri($"https://github.com/{Repository}/releases/latest/download/update.json"), timeout.Token);
+            if (manifestResponse.StatusCode != HttpStatusCode.NotFound)
+            {
+                manifestResponse.EnsureSuccessStatusCode();
+                byte[] manifestBytes = await ReadLimitedAsync(manifestResponse.Content, MaximumMetadataBytes, timeout.Token);
+                using var manifestDocument = JsonDocument.Parse(manifestBytes);
+                AppUpdate manifestUpdate = ParseManifest(manifestDocument.RootElement);
+                return manifestUpdate.Version > currentVersion ? manifestUpdate : null;
+            }
+
             using var response = await SendAsync(new Uri($"https://api.github.com/repos/{Repository}/releases/latest"), timeout.Token);
             if (response.StatusCode == HttpStatusCode.NotFound)
                 return null;
@@ -320,6 +330,35 @@ public sealed class UpdateService
     }
 
     private static string RequiredString(JsonElement element, string name) => element.GetProperty(name).GetString() ?? throw new InvalidDataException($"更新元数据缺少 {name}。");
+
+    private static AppUpdate ParseManifest(JsonElement manifest)
+    {
+        var names = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var property in manifest.EnumerateObject())
+            if (!names.Add(property.Name))
+                throw new InvalidDataException("更新清单包含重复字段。");
+
+        string versionText = RequiredString(manifest, "version");
+        if (!Regex.IsMatch(versionText, @"\A\d+\.\d+\.\d+\z", RegexOptions.CultureInvariant)
+            || !Version.TryParse(versionText, out var version)
+            || NormalizeVersion(version).ToString(3) != versionText)
+            throw new InvalidDataException("更新清单版本必须使用规范的 X.Y.Z 格式。");
+        version = NormalizeVersion(version);
+        string tag = "v" + versionText;
+        string installerName = InstallerName(versionText);
+        if (!Uri.TryCreate(RequiredString(manifest, "url"), UriKind.Absolute, out var installerUrl))
+            throw new InvalidDataException("更新清单 MSI 下载地址无效。");
+        ValidateAssetUrl(installerUrl, tag, installerName);
+        string hash = ValidateHash(RequiredString(manifest, "sha256"));
+        long size = manifest.GetProperty("size").GetInt64();
+        ValidateSize(size);
+        string expectedReleaseUrl = $"https://github.com/{Repository}/releases/tag/{tag}";
+        if (!Uri.TryCreate(RequiredString(manifest, "releaseUrl"), UriKind.Absolute, out var releaseUrl)
+            || releaseUrl.AbsoluteUri != expectedReleaseUrl)
+            throw new InvalidDataException("更新清单发布页必须属于固定 GitHub 仓库与版本。");
+        string releaseNotes = RequiredString(manifest, "releaseNotes");
+        return new AppUpdate(version, versionText, installerUrl, hash, size, releaseNotes, releaseUrl);
+    }
     private static string InstallerName(string versionText) => $"BuckCalculator-v{versionText}-win-x64.msi";
     private static Version NormalizeVersion(Version version) => new(version.Major, version.Minor, Math.Max(0, version.Build));
 

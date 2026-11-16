@@ -57,12 +57,22 @@ JsonObject Release(string tag = "v1.2.0", bool withDigest = true)
     };
 }
 
+JsonObject Manifest(string version = "1.2.0") => new()
+{
+    ["version"] = version,
+    ["url"] = $"{repository}/releases/download/v{version}/BuckCalculator-v{version}-win-x64.msi",
+    ["sha256"] = sha256,
+    ["size"] = payload.Length,
+    ["releaseUrl"] = $"{repository}/releases/tag/v{version}",
+    ["releaseNotes"] = "静态更新清单说明"
+};
+
 HttpResponseMessage JsonResponse(JsonObject release) => new(HttpStatusCode.OK) { Content = new StringContent(release.ToJsonString(), Encoding.UTF8, "application/json") };
 HttpResponseMessage DownloadResponse() => new(HttpStatusCode.OK) { Content = new ByteArrayContent(payload) };
 
-(UpdateService Service, string Directory, TestHandler Handler) CreateService(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> responder, Version? current = null)
+(UpdateService Service, string Directory, TestHandler Handler) CreateService(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> responder, Version? current = null, bool serveManifest = false)
 {
-    var handler = new TestHandler(responder);
+    var handler = new TestHandler(responder, serveManifest);
     var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(10) };
     clients.Add(client);
     string directory = Path.Combine(testRoot, Guid.NewGuid().ToString("N"));
@@ -90,7 +100,7 @@ try
     var update = await available.Service.CheckAsync() ?? throw new Exception("New update missing");
     Check(update.Version == new Version(1, 2, 0) && update.VersionText == versionText, "New stable version parsed");
     Check(update.Sha256 == sha256 && update.Size == payload.Length && update.InstallerUrl.AbsoluteUri == installerUrl, "MSI digest, size and URL parsed");
-    Check(available.Handler.Requests == 1, "Asset digest avoids checksum request");
+    Check(available.Handler.Requests == 2, "Asset digest avoids checksum request after manifest-404 fallback");
     Check(update.ReleaseNotes == "本次更新说明", "Release notes retained");
 
     foreach (string flag in new[] { "draft", "prerelease" })
@@ -150,7 +160,7 @@ try
     var fallback = CreateService((request, _) => Task.FromResult(request.RequestUri!.Host == "api.github.com"
         ? JsonResponse(fallbackRelease)
         : new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("\uFEFF" + sha256.ToUpperInvariant() + "  " + installerName + "\r\n") }));
-    Check((await fallback.Service.CheckAsync())?.Sha256 == sha256 && fallback.Handler.Requests == 2, "Checksum-file fallback supports exact filename and BOM");
+    Check((await fallback.Service.CheckAsync())?.Sha256 == sha256 && fallback.Handler.Requests == 3, "Checksum-file fallback supports exact filename and BOM");
     var wrongChecksumName = CreateService((request, _) => Task.FromResult(request.RequestUri!.Host == "api.github.com"
         ? JsonResponse(ChecksumRelease())
         : new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(sha256 + "  prefix-" + installerName) }));
@@ -226,6 +236,55 @@ try
     var absent = CreateService((_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound)));
     Check(await absent.Service.CheckAsync() is null, "Repository without stable release handled");
 
+    var staticAvailable = CreateService((_, _) => Task.FromResult(JsonResponse(Manifest())), serveManifest: true);
+    var staticUpdate = await staticAvailable.Service.CheckAsync();
+    Check(staticUpdate?.Version == new Version(1, 2, 0) && staticUpdate.Sha256 == sha256 && staticUpdate.Size == payload.Length, "Static manifest provides a validated update");
+    Check(staticUpdate?.ReleaseNotes == "静态更新清单说明" && staticAvailable.Handler.Requests == 1 && staticAvailable.Handler.ApiRequests == 0, "Static success avoids GitHub API entirely");
+    foreach (string version in new[] { "1.0.0", "0.9.0" })
+    {
+        var staticCurrent = CreateService((_, _) => Task.FromResult(JsonResponse(Manifest(version))), serveManifest: true);
+        Check(await staticCurrent.Service.CheckAsync() is null && staticCurrent.Handler.ApiRequests == 0, "Static current or older version returns no update without API");
+    }
+    foreach (string field in new[] { "version", "url", "sha256", "size", "releaseUrl", "releaseNotes" })
+    {
+        var incompleteManifest = Manifest();
+        incompleteManifest.Remove(field);
+        var incomplete = CreateService((_, _) => Task.FromResult(JsonResponse(incompleteManifest)), serveManifest: true);
+        await RejectedAsync(async () => { await incomplete.Service.CheckAsync(); }, "Missing static manifest field rejected");
+        Check(incomplete.Handler.ApiRequests == 0, "Missing manifest field never triggers API fallback");
+    }
+    foreach (var badField in new (string Name, JsonNode? Value)[]
+    {
+        ("version", JsonValue.Create("v1.2.0")),
+        ("version", JsonValue.Create("01.2.0")),
+        ("version", JsonValue.Create("1.2.0.0")),
+        ("sha256", JsonValue.Create("not-a-sha256")),
+        ("url", JsonValue.Create(installerUrl.Replace("https://", "http://"))),
+        ("url", JsonValue.Create(installerUrl.Replace("Epiphany-Lucky", "OtherOwner"))),
+        ("url", JsonValue.Create(installerUrl.Replace("/v1.2.0/", "/v1.3.0/"))),
+        ("releaseUrl", JsonValue.Create(repository + "/releases/tag/v9.9.9")),
+        ("size", JsonValue.Create(1024L * 1024 * 1024 + 1)),
+        ("size", JsonValue.Create(0)),
+        ("releaseNotes", null)
+    })
+    {
+        var badManifest = Manifest();
+        badManifest[badField.Name] = badField.Value;
+        var badStatic = CreateService((_, _) => Task.FromResult(JsonResponse(badManifest)), serveManifest: true);
+        await RejectedAsync(async () => { await badStatic.Service.CheckAsync(); }, "Invalid static manifest value rejected");
+        Check(badStatic.Handler.ApiRequests == 0, "Invalid static manifest never triggers API fallback");
+    }
+    var badOldManifest = Manifest("0.9.0");
+    badOldManifest["sha256"] = "bad";
+    var badOld = CreateService((_, _) => Task.FromResult(JsonResponse(badOldManifest)), serveManifest: true);
+    await RejectedAsync(async () => { await badOld.Service.CheckAsync(); }, "Older static manifest still requires full validation");
+    Check(badOld.Handler.ApiRequests == 0, "Bad older manifest never falls back");
+    var staticForbidden = CreateService((_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.Forbidden)), serveManifest: true);
+    await RejectedAsync(async () => { await staticForbidden.Service.CheckAsync(); }, "Static HTTP 403 remains a network error", typeof(HttpRequestException));
+    Check(staticForbidden.Handler.Requests == 1 && staticForbidden.Handler.ApiRequests == 0, "Static HTTP errors do not consume API requests");
+    var explicitFallback = MetadataService(Release());
+    Check((await explicitFallback.Service.CheckAsync())?.Version == new Version(1, 2, 0) && explicitFallback.Handler.ManifestRequests == 1 && explicitFallback.Handler.ApiRequests == 1, "Static 404 falls back to compatible legacy API");
+
     if (args.Contains("--live-check", StringComparer.Ordinal))
     {
         using var client = new HttpClient();
@@ -242,14 +301,24 @@ finally
     Directory.Delete(testRoot, true);
 }
 
-sealed class TestHandler(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> responder) : HttpMessageHandler
+sealed class TestHandler(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> responder, bool serveManifest) : HttpMessageHandler
 {
     public int Requests { get; private set; }
+    public int ApiRequests { get; private set; }
+    public int ManifestRequests { get; private set; }
     protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
         Requests++;
         if (request.Headers.UserAgent.Count == 0)
             throw new InvalidOperationException("GitHub requires User-Agent");
+        if (request.RequestUri!.AbsoluteUri == "https://github.com/Epiphany-Lucky/buck-calculator/releases/latest/download/update.json")
+        {
+            ManifestRequests++;
+            if (!serveManifest)
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
+        }
+        if (request.RequestUri.Host == "api.github.com")
+            ApiRequests++;
         return responder(request, cancellationToken);
     }
 }

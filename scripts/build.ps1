@@ -1,6 +1,6 @@
 param(
     [ValidatePattern('^\d+\.\d+\.\d+$')]
-    [string]$Version = '1.1.0',
+    [string]$Version = '1.1.1',
     [switch]$SkipSmokeTest,
     [switch]$VerifyInstall
 )
@@ -83,6 +83,17 @@ try {
     $checksumFile = Join-Path $artifactsDirectory 'SHA256SUMS.txt'
     [System.IO.File]::WriteAllText($checksumFile, ('{0}  {1}{2}' -f $hash, (Split-Path -Leaf $releaseMsi), [Environment]::NewLine),
         [System.Text.UTF8Encoding]::new($false))
+    $updateManifest = [ordered]@{
+        version = $Version
+        url = "https://github.com/Epiphany-Lucky/buck-calculator/releases/download/v$Version/BuckCalculator-v$Version-win-x64.msi"
+        sha256 = $hash
+        size = (Get-Item -LiteralPath $releaseMsi).Length
+        releaseUrl = "https://github.com/Epiphany-Lucky/buck-calculator/releases/tag/v$Version"
+        releaseNotes = '更新检查改用稳定版本清单，改善安装升级与多显示器窗口适配。'
+    }
+    $manifestFile = Join-Path $artifactsDirectory 'update.json'
+    [System.IO.File]::WriteAllText($manifestFile, (($updateManifest | ConvertTo-Json -Depth 3) + [Environment]::NewLine),
+        [System.Text.UTF8Encoding]::new($false))
 
     if ($VerifyInstall) {
         if ([Version]::Parse($Version) -le [Version]'1.0.9') {
@@ -104,7 +115,7 @@ try {
             -PreviousMsiPath $previousMsi -UpdateHelperPath $publishedExe
     }
     Write-Host "Installer release files are ready in $artifactsDirectory"
-    Get-Item -LiteralPath $releaseMsi, $checksumFile | Select-Object Name, Length
+    Get-Item -LiteralPath $releaseMsi, $checksumFile, $manifestFile | Select-Object Name, Length
 }
 finally {
     Pop-Location

@@ -23,7 +23,7 @@ jobs:
       - name: Check, publish and verify application
         shell: pwsh
         run: |
-          $version = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME.Substring(1) } else { '1.1.0' }
+          $version = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME.Substring(1) } else { '1.1.1' }
           ./scripts/build.ps1 -Version $version -VerifyInstall
       - name: Upload downloadable package
         uses: actions/upload-artifact@v7.0.2
@@ -33,6 +33,7 @@ jobs:
           path: |
             artifacts/BuckCalculator-v*-win-x64.msi
             artifacts/SHA256SUMS.txt
+            artifacts/update.json
       - name: Upload application verification
         if: always()
         uses: actions/upload-artifact@v7.0.2

@@ -10,22 +10,23 @@
 
 | 附件 | 用途 |
 |---|---|
-| `BuckCalculator-v1.1.0-win-x64.msi` | 中文 Windows 安装程序 |
+| `BuckCalculator-v1.1.1-win-x64.msi` | 中文 Windows 安装程序 |
 | `SHA256SUMS.txt` | MSI 安装包的 SHA-256 校验值 |
+| `update.json` | 软件更新使用的版本、下载地址、大小与校验信息 |
 
 程序为当前 Windows 用户安装，默认位置为 `%LocalAppData%\Programs\BuckCalculator`。安装过程创建桌面和开始菜单快捷方式，Windows“设置 → 应用 → 已安装的应用”中提供卸载入口。升级沿用原安装目录。
 
 在 PowerShell 中执行以下命令可查看本地下载文件的校验值，并与 `SHA256SUMS.txt` 比较。
 
 ```powershell
-Get-FileHash -Algorithm SHA256 -LiteralPath '.\BuckCalculator-v1.1.0-win-x64.msi'
+Get-FileHash -Algorithm SHA256 -LiteralPath '.\BuckCalculator-v1.1.1-win-x64.msi'
 ```
 
 ## 软件内更新
 
-程序在启动时及运行期间每 6 小时查询一次 GitHub 最新稳定版 Release。发现新版本后显示更新提示，也可以通过界面中的“检查更新”手动查询。
+程序在启动时及运行期间每 6 小时查询一次 GitHub 最新稳定版 Release 附件中的静态 `update.json`。清单提供版本、MSI 下载地址、大小、SHA-256 和升级说明。发现新版本后显示更新提示，也可以通过界面中的“检查更新”手动查询。
 
-选择下载安装后，程序下载对应的 Windows x64 MSI，并用 Release 提供的 SHA-256 校验下载内容。下载和校验完成后，更新助手等待当前程序退出，运行 Windows Installer 完成升级，随后从安装目录重新启动应用。更新检查采用客户端定期轮询，联网状态和 GitHub API 可用性会影响检查时间。
+选择下载安装后，程序下载对应的 Windows x64 MSI，并用清单提供的 SHA-256 校验下载内容。下载和校验完成后，更新助手等待当前程序退出，运行 Windows Installer 完成升级，随后从安装目录重新启动应用。更新检查采用客户端定期轮询，联网状态和 GitHub 下载服务可用性会影响检查时间。静态清单返回 404 时，程序尝试通过 GitHub API 查询稳定版 Release。
 
 ## 主要功能
 
@@ -108,15 +109,15 @@ dotnet run --project '.\src\BuckCalculator\BuckCalculator.csproj'
 执行计算、更新和界面验证，并构建安装包。
 
 ```powershell
-.\scripts\build.ps1 -Version 1.1.0
+.\scripts\build.ps1 -Version 1.1.1
 ```
 
-构建脚本先运行计算、报告与更新检查，再将 Windows x64 自包含应用封装进 WiX 6.0.2 MSI。程序运行所需的 .NET 运行时包含在应用中。输出位于 `artifacts`，发布附件为 MSI 和 SHA-256 文件，界面验证结果位于 `artifacts/smoke-test`。[Microsoft 自包含与单文件部署说明](https://learn.microsoft.com/en-us/dotnet/core/deploying/single-file/overview)
+构建脚本先运行计算、报告与更新检查，再将 Windows x64 自包含应用封装进 WiX 6.0.2 MSI。程序运行所需的 .NET 运行时包含在应用中。输出位于 `artifacts`，包括 MSI、SHA-256 文件和基于本次 MSI 哈希及大小生成的 `update.json`，界面验证结果位于 `artifacts/smoke-test`。[Microsoft 自包含与单文件部署说明](https://learn.microsoft.com/en-us/dotnet/core/deploying/single-file/overview)
 
 加入 `-VerifyInstall` 可进一步执行隔离安装验证。脚本生成内部使用的 1.0.9 测试版本，在 `artifacts/installer-test/app` 安装后调用软件更新助手升级到目标 MSI，检查原安装目录保留、旧产品注销、自动重启、降级阻止和卸载清理。检测到现有用户安装或快捷方式时会记录跳过结果。
 
 ```powershell
-.\scripts\build.ps1 -Version 1.1.0 -VerifyInstall
+.\scripts\build.ps1 -Version 1.1.1 -VerifyInstall
 ```
 
 也可以单独执行计算验证。
@@ -128,11 +129,11 @@ dotnet run --project '.\tests\BuckCalculator.UpdateChecks.csproj' --configuratio
 
 ## GitHub 自动发布
 
-推送到 `main` 会运行构建验证并保留可下载的 Actions 安装包。推送 `v*` 标签会在验证成功后创建 GitHub Release，并上传 MSI 和校验文件。已存在的同名 Release 会更新安装附件。
+推送到 `main` 会运行构建验证并保留可下载的 Actions 安装包。推送 `v*` 标签会在验证成功后创建 GitHub Release，并上传 MSI、校验文件和静态更新清单。已存在的同名 Release 会更新安装附件。
 
 ```powershell
-git tag v1.1.0
-git push origin v1.1.0
+git tag v1.1.1
+git push origin v1.1.1
 ```
 
 ## 源码使用

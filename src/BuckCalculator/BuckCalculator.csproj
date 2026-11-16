@@ -7,7 +7,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>BuckCalculator</AssemblyName>
     <RootNamespace>BuckCalculator</RootNamespace>
-    <Version>1.1.0</Version>
+    <Version>1.1.1</Version>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <Description>BUCK 电路参数计算器</Description>
     <PublishSingleFile>true</PublishSingleFile>
