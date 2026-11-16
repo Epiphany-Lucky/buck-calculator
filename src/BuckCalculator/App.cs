@@ -52,7 +52,7 @@ public static class App
             if (smokeDirectory is not null)
                 File.WriteAllText(Path.Combine(smokeDirectory, "smoke-error.txt"), exception.ToString());
             else
-                MessageBox.Show(exception.Message, args.FirstOrDefault() == "--apply-update" ? "BUCK 计算器更新失败" : "BUCK 计算器启动失败", MessageBoxButton.OK, MessageBoxImage.Error);
+                MessageBox.Show(exception.Message, args.FirstOrDefault() == "--apply-update" ? "BUCK / BOOST 计算器更新失败" : "BUCK / BOOST 计算器启动失败", MessageBoxButton.OK, MessageBoxImage.Error);
             return 1;
         }
     }

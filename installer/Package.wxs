@@ -1,14 +1,14 @@
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
      xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
-  <Package Name="BUCK 计算器" Manufacturer="Epiphany-Lucky"
+  <Package Name="BUCK / BOOST 计算器" Manufacturer="Epiphany-Lucky"
            Version="$(var.Version)" Language="2052" Codepage="936"
            Scope="perUser" InstallerVersion="500"
            UpgradeCode="{C7BB44A5-16CA-4D44-B50F-63970CFC9D6E}">
     <MajorUpgrade Schedule="afterInstallInitialize" AllowSameVersionUpgrades="yes"
-                  DowngradeErrorMessage="已安装较新版本的 BUCK 计算器，请使用当前版本或更高版本。" />
+                  DowngradeErrorMessage="已安装较新版本的 BUCK / BOOST 计算器，请使用当前版本或更高版本。" />
     <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
 
-    <Property Id="ARPCOMMENTS" Value="BUCK 电路参数计算、波形预览与计算报告" />
+    <Property Id="ARPCOMMENTS" Value="BUCK / BOOST 参数计算、拓扑图、波形预览与计算报告" />
     <Property Id="ARPURLINFOABOUT" Value="https://github.com/Epiphany-Lucky/buck-calculator" />
     <Property Id="INSTALLFOLDER" Secure="yes">
       <RegistrySearch Id="ExistingInstallFolder" Root="HKCU"
@@ -29,6 +29,7 @@
           <Directory Id="ApplicationDocsFolder" Name="docs">
             <Component Id="ApplicationDocumentation" Guid="{4F39D1DC-13A3-4FAF-A1C8-D047F68266A0}">
               <File Id="ApplicationScreenshot" Source="$(var.ProjectRoot)\docs\screenshot.png" />
+              <File Id="ApplicationBoostScreenshot" Source="$(var.ProjectRoot)\docs\screenshot-boost.png" />
               <RegistryValue Root="HKCU" Key="Software\Epiphany-Lucky\BuckCalculator"
                              Name="DocumentationInstalled" Value="1" Type="integer" KeyPath="yes" />
               <RemoveFolder Id="RemoveDocumentationFolder" Directory="ApplicationDocsFolder" On="uninstall" />
@@ -42,10 +43,10 @@
       <Directory Id="ApplicationMenuFolder" Name="BuckCalculator">
         <Component Id="ApplicationShortcuts" Guid="{8ECCB405-37D8-4AD0-B44D-AC0FEA2DF9BC}">
           <Shortcut Id="StartMenuShortcut" Name="BUCK 计算器" Target="[INSTALLFOLDER]BuckCalculator.exe"
-                    WorkingDirectory="INSTALLFOLDER" Description="BUCK 电路参数计算器" />
+                    WorkingDirectory="INSTALLFOLDER" Description="BUCK / BOOST 电路参数计算与拓扑图" />
           <Shortcut Id="DesktopShortcut" Directory="DesktopFolder" Name="BUCK 计算器"
                     Target="[INSTALLFOLDER]BuckCalculator.exe" WorkingDirectory="INSTALLFOLDER"
-                    Description="BUCK 电路参数计算器" />
+                    Description="BUCK / BOOST 电路参数计算与拓扑图" />
           <RegistryValue Root="HKCU" Key="Software\Epiphany-Lucky\BuckCalculator"
                          Name="ShortcutsInstalled" Value="1" Type="integer" KeyPath="yes" />
           <RemoveFolder Id="RemoveStartMenuFolder" Directory="ApplicationMenuFolder" On="uninstall" />
@@ -54,7 +55,7 @@
     </StandardDirectory>
     <StandardDirectory Id="DesktopFolder" />
 
-    <Feature Id="Complete" Title="BUCK 计算器" Level="1">
+    <Feature Id="Complete" Title="BUCK / BOOST 计算器" Level="1">
       <ComponentRef Id="ApplicationFiles" />
       <ComponentRef Id="ApplicationShortcuts" />
       <ComponentRef Id="ApplicationDocumentation" />

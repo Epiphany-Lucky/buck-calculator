@@ -35,6 +35,11 @@ $query.Execute()
 $productCode = $query.Fetch().StringData(1)
 $query.Close()
 if ($productCode -notmatch '^\{[0-9A-Fa-f-]{36}\}$') { throw 'The MSI ProductCode is invalid.' }
+$nameQuery = $database.OpenView('SELECT `Value` FROM `Property` WHERE `Property` = ''ProductName''')
+$nameQuery.Execute()
+$productName = $nameQuery.Fetch().StringData(1)
+$nameQuery.Close()
+if ([string]::IsNullOrWhiteSpace($productName)) { throw 'The MSI ProductName is missing.' }
 $installedByThisTest = $false
 $installedProductCode = $productCode
 $previousProductCode = $null
@@ -143,12 +148,19 @@ try {
         -not (Test-Path -LiteralPath $menuShortcut)) {
         throw 'The installed EXE or application shortcuts are missing.'
     }
+    $shortcutShell = New-Object -ComObject WScript.Shell
+    foreach ($shortcutPath in @($desktopShortcut, $menuShortcut)) {
+        $shortcutTarget = $shortcutShell.CreateShortcut($shortcutPath).TargetPath
+        if ([System.IO.Path]::GetFullPath($shortcutTarget) -ne [System.IO.Path]::GetFullPath($installedExe)) {
+            throw 'An installed application shortcut points outside the verified installation directory.'
+        }
+    }
     if ($installerApi.ProductInfo($productCode, 'AssignmentType') -ne '0') {
         throw 'The MSI did not register a per-user installation.'
     }
     $uninstallEntry = @('HKCU:', 'HKLM:') |
         ForEach-Object { Get-ItemProperty -LiteralPath "$_\Software\Microsoft\Windows\CurrentVersion\Uninstall\$productCode" -ErrorAction SilentlyContinue } |
-        Where-Object { $_.DisplayName -eq 'BUCK 计算器' -and $_.UninstallString -like "*$productCode*" -and $_.SystemComponent -ne 1 } |
+        Where-Object { $_.DisplayName -eq $productName -and $_.UninstallString -like "*$productCode*" -and $_.SystemComponent -ne 1 } |
         Select-Object -First 1
     if (-not $uninstallEntry) { throw 'The visible Windows uninstall entry is missing or invalid.' }
     $results.Add('PASS: per-user installation, custom install directory, registry path, shortcuts and uninstall entry')

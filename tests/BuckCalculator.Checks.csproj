@@ -10,6 +10,7 @@
     <Compile Include="Program.cs" />
     <Compile Include="../src/BuckCalculator/Models.cs" Link="Models.cs" />
     <Compile Include="../src/BuckCalculator/BuckMath.cs" Link="BuckMath.cs" />
+    <Compile Include="../src/BuckCalculator/BoostMath.cs" Link="BoostMath.cs" />
     <Compile Include="../src/BuckCalculator/ReportExporter.cs" Link="ReportExporter.cs" />
   </ItemGroup>
 </Project>

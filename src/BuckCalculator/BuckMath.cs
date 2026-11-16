@@ -10,7 +10,7 @@ public static class BuckMath
     public static BuckResult Calculate(BuckInputs p)
     {
         ArgumentNullException.ThrowIfNull(p);
-        Validate(p);
+        ValidateInputs(p, ConverterTopology.Buck);
 
         double frequency = Positive(p.FrequencyKhz * 1_000, "开关频率");
         double dutyMin = Positive(p.Vout / p.VinMax, "最小占空比");
@@ -122,13 +122,14 @@ public static class BuckMath
             new("输出电容", "所需标称输出电容下限", Format(requiredCapacitance), "µF", "扣除 ESR 纹波预算，包含有效容量折减"),
             new("输出电容", "采用标称输出电容", Format(selectedCapacitance), "µF", p.OutputCapacitorUf > 0 ? "使用手动候选值" : "E12 标称系列向上取值"),
             new("输出电容", "有效输出电容", Format(effectiveCapacitance), "µF", "标称容量 × (1 − 折减比例)"),
+            new("输出电容", "输出电容 RMS 电流", Format(ripple / Math.Sqrt(12)), "A RMS", "ΔIL / sqrt(12)，最高输入电压"),
             new("输出电容", "电容充放电纹波", Format(capacitiveRipple), "mV p-p", "ΔIL / (8 × fs × Cout,eff)"),
             new("输出电容", "ESR 纹波", Format(esrRipple), "mV p-p", "ΔIL × ESR"),
             new("输出电容", "总输出纹波估算", Format(totalRipple), "mV p-p", "充放电项与 ESR 项相加"),
             new("输入与开关", "有效输入电容下限", Format(inputCapacitance), "µF", $"矩形电流近似，最坏 D = {Format(capacitanceDuty * 100)}%，实际选型需考虑降额与输入 ESR"),
             new("输入与开关", "输入电容 RMS 电流", Format(inputRms), "A RMS", "包含电感纹波，搜索全输入范围的极值"),
             new("输入与开关", "高侧开关 RMS 电流", Format(highSideRms), "A RMS", "搜索全输入范围的极值"),
-            new("输入与开关", "低侧开关 RMS 电流", Format(lowSideRms), "A RMS", "搜索全输入范围的极值")
+            new("输入与开关", "续流支路 RMS 电流", Format(lowSideRms), "A RMS", "二极管或低侧同步整流器，搜索全输入范围的极值")
         };
 
         return new BuckResult
@@ -157,6 +158,20 @@ public static class BuckMath
             InputCapacitorRms = inputRms,
             HighSideRmsWorst = highSideRms,
             LowSideRmsWorst = lowSideRms,
+            MainSwitchRms = highSideRms,
+            RectifierRms = lowSideRms,
+            OutputCapacitorRms = ripple / Math.Sqrt(12),
+            RippleVin = p.VinMax,
+            PeakCurrentVin = p.VinMax,
+            ValleyCurrentVin = p.VinMax,
+            BoundaryVin = p.VinMax,
+            MaximumRelativeRipplePercent = ripple / p.IoutMax * 100,
+            WaveformVin = p.VinMax,
+            WaveformDuty = dutyMin,
+            WaveformAverageCurrent = p.IoutMax,
+            WaveformRipple = ripple,
+            WaveformPeakCurrent = peak,
+            WaveformValleyCurrent = valley,
             OutputPower = outputPower,
             LoadResistance = loadResistance,
             Metrics = metrics,
@@ -164,8 +179,10 @@ public static class BuckMath
         };
     }
 
-    private static void Validate(BuckInputs p)
+    internal static void ValidateInputs(BuckInputs p, ConverterTopology topology)
     {
+        if (!Enum.IsDefined(p.Topology) || p.Topology != topology)
+            throw new ArgumentException("所选拓扑与计算引擎不一致，请重新选择 BUCK 或 BOOST 模式。");
         (double Value, string Name)[] positiveValues =
         [
             (p.VinMin, "最小输入电压"), (p.VinMax, "最大输入电压"), (p.Vout, "输出电压"),
@@ -188,8 +205,10 @@ public static class BuckMath
             if (item.Value < 0)
                 throw new ArgumentException($"{item.Name}必须大于或等于零。");
         }
-        if (p.VinMin <= p.Vout)
+        if (topology == ConverterTopology.Buck && p.VinMin <= p.Vout)
             throw new ArgumentException("BUCK 降压计算要求最小输入电压大于输出电压。");
+        if (topology == ConverterTopology.Boost && p.VinMax >= p.Vout)
+            throw new ArgumentException("BOOST 升压计算要求最大输入电压小于输出电压。");
         if (p.VinMax < p.VinMin)
             throw new ArgumentException("最大输入电压必须大于或等于最小输入电压。");
         if (p.RipplePercent >= 200)
@@ -208,7 +227,7 @@ public static class BuckMath
         return Finite(maximum, "区间极值");
     }
 
-    private static double RoundUpE12(double value)
+    internal static double RoundUpE12(double value)
     {
         double decade = Positive(Math.Pow(10, Math.Floor(Math.Log10(value))), "E12 数值范围");
         foreach (double coefficient in E12)
@@ -220,7 +239,7 @@ public static class BuckMath
         return Positive(10 * decade, "E12 推荐值");
     }
 
-    private static double Positive(double value, string name)
+    internal static double Positive(double value, string name)
     {
         Finite(value, name);
         if (value <= 0)
@@ -228,12 +247,12 @@ public static class BuckMath
         return value;
     }
 
-    private static double Finite(double value, string name)
+    internal static double Finite(double value, string name)
     {
         if (!double.IsFinite(value))
             throw new ArgumentException($"{name}超出可计算的数值范围，请检查参数并使用工程量级数值。");
         return value;
     }
 
-    private static string Format(double value) => value.ToString("G6", CultureInfo.InvariantCulture);
+    internal static string Format(double value) => value.ToString("G6", CultureInfo.InvariantCulture);
 }

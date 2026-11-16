@@ -7,9 +7,9 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>BuckCalculator</AssemblyName>
     <RootNamespace>BuckCalculator</RootNamespace>
-    <Version>1.1.1</Version>
+    <Version>1.2.0</Version>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <Description>BUCK 电路参数计算器</Description>
+    <Description>BUCK / BOOST 电路参数计算与拓扑图</Description>
     <PublishSingleFile>true</PublishSingleFile>
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
   </PropertyGroup>

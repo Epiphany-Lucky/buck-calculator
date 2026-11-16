@@ -1,7 +1,10 @@
 namespace BuckCalculator;
 
+public enum ConverterTopology { Buck, Boost }
+
 public sealed record BuckInputs
 {
+    public ConverterTopology Topology { get; init; } = ConverterTopology.Buck;
     public double VinMin { get; init; } = 9;
     public double VinMax { get; init; } = 16;
     public double Vout { get; init; } = 5;
@@ -46,6 +49,20 @@ public sealed record BuckResult
     public double InputCapacitorRms { get; init; }
     public double HighSideRmsWorst { get; init; }
     public double LowSideRmsWorst { get; init; }
+    public double MainSwitchRms { get; init; }
+    public double RectifierRms { get; init; }
+    public double OutputCapacitorRms { get; init; }
+    public double RippleVin { get; init; }
+    public double PeakCurrentVin { get; init; }
+    public double ValleyCurrentVin { get; init; }
+    public double BoundaryVin { get; init; }
+    public double MaximumRelativeRipplePercent { get; init; }
+    public double WaveformVin { get; init; }
+    public double WaveformDuty { get; init; }
+    public double WaveformAverageCurrent { get; init; }
+    public double WaveformRipple { get; init; }
+    public double WaveformPeakCurrent { get; init; }
+    public double WaveformValleyCurrent { get; init; }
     public double OutputPower { get; init; }
     public double LoadResistance { get; init; }
     public IReadOnlyList<ResultMetric> Metrics { get; init; } = [];

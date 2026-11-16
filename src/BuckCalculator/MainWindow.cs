@@ -22,9 +22,20 @@ public sealed class MainWindow : Window
     private static readonly Brush Accent = ColorBrush("#007AFF");
     private static readonly Brush Line = ColorBrush("#E5E5EA");
     private readonly Dictionary<string, TextBox> fields = [];
+    private readonly Dictionary<string, TextBlock> fieldLabels = [];
+    private readonly Dictionary<ConverterTopology, Dictionary<string, string>> topologyInputs = [];
+    private readonly Button buckButton = new() { Content = "BUCK 降压", Height = 34, MinWidth = 116 };
+    private readonly Button boostButton = new() { Content = "BOOST 升压", Height = 34, MinWidth = 116 };
+    private readonly TopologyDiagram topologyDiagram = new();
+    private readonly TextBlock inputHeadingTitle = new() { Text = "设计参数", FontSize = 18, FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 0, 0, 12) };
+    private readonly ScrollViewer inputScroll = new() { VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
+    private readonly TextBlock applicationTitle = new() { Text = "BUCK / BOOST 计算器", FontSize = 25, FontWeight = FontWeights.SemiBold, Foreground = Ink };
+    private readonly TextBlock headerSubtitle = new() { Text = "电源参数设计、拓扑与最坏工况检查", FontSize = 13, Foreground = Muted, Margin = new Thickness(0, 5, 0, 0) };
+    private readonly TextBlock topologyTitle = new() { FontSize = 16, FontWeight = FontWeights.SemiBold };
+    private readonly TextBlock formulaText = new() { FontSize = 12, LineHeight = 21, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 12, 0, 8) };
     private readonly Button calculateButton = new() { Content = "计算并检查", Height = 42 };
     private readonly Button exportButton = new() { Content = "导出报告", MinWidth = 104, Height = 36 };
-    private readonly TextBlock status = new() { TextWrapping = TextWrapping.Wrap, FontSize = 12, LineHeight = 19 };
+    private readonly TextBlock status = new() { TextWrapping = TextWrapping.Wrap, TextTrimming = TextTrimming.CharacterEllipsis, MaxHeight = 42, FontSize = 12, LineHeight = 19 };
     private readonly TextBlock modeStatus = new() { FontSize = 13, TextWrapping = TextWrapping.Wrap };
     private readonly TextBlock waveformDescription = new() { FontSize = 12, Foreground = Muted, TextWrapping = TextWrapping.Wrap };
     private readonly StackPanel metricPanel = new();
@@ -37,10 +48,10 @@ public sealed class MainWindow : Window
     private readonly Button secondExampleButton = new() { Content = "12 V / 3 A", Width = 104, Height = 30, ToolTip = "载入 18–30 V 输入、12 V / 3 A 示例" };
     private readonly Button checkUpdatesButton = new() { Content = "检查更新", MinWidth = 92, Height = 36, Margin = new Thickness(0, 0, 10, 0) };
     private readonly Button updateActionButton = new() { Content = "下载并更新", MinWidth = 112, Height = 34 };
-    private readonly TextBlock updateMessage = new() { TextWrapping = TextWrapping.Wrap, Foreground = Ink, FontSize = 12, VerticalAlignment = VerticalAlignment.Center };
+    private readonly TextBlock updateMessage = new() { TextWrapping = TextWrapping.Wrap, TextTrimming = TextTrimming.CharacterEllipsis, MaxHeight = 40, Foreground = Ink, FontSize = 12, VerticalAlignment = VerticalAlignment.Center };
     private readonly ProgressBar downloadProgress = new() { Minimum = 0, Maximum = 100, Height = 5, Visibility = Visibility.Collapsed, Margin = new Thickness(0, 10, 0, 0) };
     private readonly Button parametersTab = new() { Content = "设计参数", Height = 34, MinWidth = 118 };
-    private readonly Button resultsTab = new() { Content = "计算结果", Height = 34, MinWidth = 118 };
+    private readonly Button resultsTab = new() { Content = "结果与拓扑", Height = 34, MinWidth = 118 };
     private readonly CancellationTokenSource updateCancellation = new();
     private readonly DispatcherTimer updateTimer = new() { Interval = TimeSpan.FromHours(6) };
     private readonly UpdateService updateService = new();
@@ -49,6 +60,7 @@ public sealed class MainWindow : Window
     private Grid header = null!;
     private FrameworkElement headerTitle = null!;
     private FrameworkElement headerTools = null!;
+    private FrameworkElement exampleTools = null!;
     private FrameworkElement inputPane = null!;
     private Border compactNavigation = null!;
     private Border updateBanner = null!;
@@ -61,13 +73,14 @@ public sealed class MainWindow : Window
     private bool windowClosed;
     private bool fittingWindow;
     private bool updatingInputs;
+    private ConverterTopology selectedTopology;
 
     public BuckResult? CurrentResult { get; private set; }
 
     public MainWindow(bool enableAutomaticUpdates = true)
     {
         automaticUpdates = enableAutomaticUpdates;
-        Title = "BUCK 计算器 · Epiphany";
+        Title = "BUCK / BOOST 计算器 · Epiphany";
         var startupArea = GetStartupWorkArea();
         Width = Math.Max(320, Math.Min(1240, startupArea.Width - 32));
         Height = Math.Max(260, Math.Min(840, startupArea.Height - 32));
@@ -81,6 +94,8 @@ public sealed class MainWindow : Window
         UseLayoutRounding = true;
         SnapsToDevicePixels = true;
         SetResources();
+        status.SetBinding(ToolTipProperty, new System.Windows.Data.Binding(nameof(TextBlock.Text)) { Source = status });
+        updateMessage.SetBinding(ToolTipProperty, new System.Windows.Data.Binding(nameof(TextBlock.Text)) { Source = updateMessage });
 
         var layout = new Grid { Background = Background };
         layout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
@@ -121,6 +136,8 @@ public sealed class MainWindow : Window
         waveform.SizeChanged += (_, _) => DrawWaveform();
         firstExampleButton.Click += (_, _) => ApplyExample(0);
         secondExampleButton.Click += (_, _) => ApplyExample(1);
+        buckButton.Click += (_, _) => SwitchTopology(ConverterTopology.Buck);
+        boostButton.Click += (_, _) => SwitchTopology(ConverterTopology.Boost);
         checkUpdatesButton.Click += async (_, _) => await CheckForUpdatesAsync(true);
         updateActionButton.Click += async (_, _) =>
         {
@@ -223,12 +240,13 @@ public sealed class MainWindow : Window
         header.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         header.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         var titlePanel = new StackPanel();
-        titlePanel.Children.Add(new TextBlock { Text = "BUCK 计算器", FontSize = 27, FontWeight = FontWeights.SemiBold, Foreground = Ink });
-        titlePanel.Children.Add(new TextBlock { Text = "降压电源参数设计与最坏工况检查", FontSize = 13, Foreground = Muted, Margin = new Thickness(0, 5, 0, 0) });
+        titlePanel.Children.Add(applicationTitle);
+        titlePanel.Children.Add(headerSubtitle);
         header.Children.Add(titlePanel);
         headerTitle = titlePanel;
         var tools = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
-        tools.Children.Add(new TextBlock { Text = "示例", Foreground = Muted, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 10, 0) });
+        var examples = new StackPanel { Orientation = Orientation.Horizontal };
+        examples.Children.Add(new TextBlock { Text = "示例", Foreground = Muted, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 10, 0) });
         var segments = new StackPanel { Orientation = Orientation.Horizontal };
         firstExampleButton.BorderThickness = new Thickness(0);
         secondExampleButton.BorderThickness = new Thickness(0);
@@ -236,7 +254,9 @@ public sealed class MainWindow : Window
         secondExampleButton.FontSize = 12;
         segments.Children.Add(firstExampleButton);
         segments.Children.Add(secondExampleButton);
-        tools.Children.Add(new Border { Child = segments, Background = ColorBrush("#E8E8ED"), CornerRadius = new CornerRadius(9), Padding = new Thickness(3), Margin = new Thickness(0, 0, 12, 0) });
+        examples.Children.Add(new Border { Child = segments, Background = ColorBrush("#E8E8ED"), CornerRadius = new CornerRadius(9), Padding = new Thickness(3), Margin = new Thickness(0, 0, 12, 0) });
+        tools.Children.Add(examples);
+        exampleTools = examples;
         tools.Children.Add(checkUpdatesButton);
         tools.Children.Add(exportButton);
         Grid.SetColumn(tools, 1);
@@ -314,13 +334,20 @@ public sealed class MainWindow : Window
         parametersTab.Foreground = showingResults ? Muted : Ink;
         resultsTab.Background = showingResults ? Brushes.White : Brushes.Transparent;
         resultsTab.Foreground = showingResults ? Ink : Muted;
-        bool stackedHeader = width < 1000;
+        bool shortLayout = ActualHeight < 560;
+        bool stackedHeader = width < 1000 && !shortLayout;
+        applicationTitle.FontSize = shortLayout ? 20 : 25;
+        status.MaxHeight = shortLayout ? 19 : 42;
+        updateMessage.MaxHeight = shortLayout ? 32 : 40;
+        headerSubtitle.Visibility = shortLayout ? Visibility.Collapsed : Visibility.Visible;
+        exampleTools.Visibility = shortLayout ? Visibility.Collapsed : Visibility.Visible;
+        inputHeadingTitle.Visibility = shortLayout ? Visibility.Collapsed : Visibility.Visible;
         Grid.SetColumnSpan(headerTitle, stackedHeader ? 2 : 1);
         Grid.SetRow(headerTools, stackedHeader ? 1 : 0);
         Grid.SetColumn(headerTools, stackedHeader ? 0 : 1);
         Grid.SetColumnSpan(headerTools, stackedHeader ? 2 : 1);
         headerTools.Margin = new Thickness(0, stackedHeader ? 12 : 0, 0, 0);
-        header.Margin = new Thickness(compactLayout ? 18 : 27, 18, compactLayout ? 18 : 27, 16);
+        header.Margin = new Thickness(compactLayout ? 18 : 27, shortLayout ? 10 : 18, compactLayout ? 18 : 27, shortLayout ? 10 : 16);
         DrawWaveform();
     }
 
@@ -461,15 +488,24 @@ public sealed class MainWindow : Window
         panel.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         panel.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         panel.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        panel.Children.Add(new TextBlock { Text = "设计参数", FontSize = 18, FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 0, 0, 16) });
+        var inputHeading = new StackPanel();
+        inputHeading.Children.Add(inputHeadingTitle);
+        var topologyChoices = new UniformGrid { Columns = 2 };
+        buckButton.BorderThickness = new Thickness(0);
+        boostButton.BorderThickness = new Thickness(0);
+        topologyChoices.Children.Add(buckButton);
+        topologyChoices.Children.Add(boostButton);
+        inputHeading.Children.Add(new Border { Child = topologyChoices, Background = ColorBrush("#E8E8ED"), CornerRadius = new CornerRadius(9), Padding = new Thickness(3), Margin = new Thickness(0, 0, 0, 14) });
 
         var inputFields = new StackPanel { Margin = new Thickness(0, 0, 10, 0) };
+        inputFields.Children.Add(inputHeading);
         inputFields.Children.Add(SectionLabel("电源规格"));
         inputFields.Children.Add(FieldPair(("VinMin", "输入下限", "V"), ("VinMax", "输入上限", "V")));
         inputFields.Children.Add(FieldPair(("Vout", "输出电压", "V"), ("IoutMax", "额定输出电流", "A")));
         inputFields.Children.Add(FieldPair(("FrequencyKhz", "开关频率", "kHz"), ("IoutOperating", "检查工作负载", "A")));
         inputFields.Children.Add(SectionLabel("纹波与容差"));
         inputFields.Children.Add(FieldPair(("RipplePercent", "电感纹波目标", "%"), ("OutputRippleMv", "输出纹波预算", "mVpp")));
+        inputFields.Children.Add(new TextBlock { Text = "纹波目标为 ΔIL 峰峰值占平均电感电流的比例。BUCK 的平均值为 Iout，BOOST 按各输入电压下的 IL,avg 计算。", Foreground = Muted, FontSize = 11.5, LineHeight = 18, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, -2, 0, 10) });
         inputFields.Children.Add(FieldPair(("InductorTolerancePercent", "电感负容差", "%"), ("CapacitanceDeratingPercent", "输出容量折减", "%")));
         inputFields.Children.Add(FieldPair(("EsrMilliohm", "输出电容 ESR", "mΩ"), ("InputRippleMv", "输入纹波预算", "mVpp")));
         inputFields.Children.Add(SectionLabel("候选元件"));
@@ -483,14 +519,9 @@ public sealed class MainWindow : Window
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 0, 0, 10)
         });
-        var scroll = new ScrollViewer
-        {
-            Content = inputFields,
-            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled
-        };
-        Grid.SetRow(scroll, 1);
-        panel.Children.Add(scroll);
+        inputScroll.Content = inputFields;
+        Grid.SetRow(inputScroll, 1);
+        panel.Children.Add(inputScroll);
 
         var footer = new StackPanel { Margin = new Thickness(0, 12, 0, 0) };
         calculateButton.Background = Accent;
@@ -508,6 +539,13 @@ public sealed class MainWindow : Window
     private UIElement BuildResults()
     {
         var results = new StackPanel { Margin = new Thickness(0, 0, 12, 0) };
+        var topologyContent = new StackPanel();
+        topologyContent.Children.Add(topologyTitle);
+        topologyContent.Children.Add(topologyDiagram);
+        topologyContent.Children.Add(new TextBlock { Text = "理想非同步功率级。Q 为受控开关，D 的短线端为阴极。", FontSize = 11.5, Foreground = Muted, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 3, 0, 0) });
+        var topologyCard = Card(topologyContent, 18);
+        topologyCard.Margin = new Thickness(0, 0, 0, 14);
+        results.Children.Add(topologyCard);
         var summary = new UniformGrid { Columns = 2, Rows = 2, Margin = new Thickness(-5, -5, -5, 11) };
         summary.Children.Add(SummaryCard("inductor", "标称电感", "µH"));
         summary.Children.Add(SummaryCard("capacitor", "标称输出电容", "µF"));
@@ -547,22 +585,10 @@ public sealed class MainWindow : Window
         results.Children.Add(notesCard);
 
         var formulas = new Expander { Header = "计算关系与适用条件", Foreground = Muted, FontSize = 13, Padding = new Thickness(2) };
-        formulas.Content = new TextBlock
-        {
-            Text = "固定频率、理想 CCM 稳态模型。ΔIL 为电感电流峰峰值。\n\n"
-                + "D = Vout / Vin\nLmin = Lnom × (1 − 负容差)\nΔIL = Vout × (1 − D) / (Lmin × fs)\n"
-                + "IL,peak = Iout,max + ΔIL / 2\nIL,rms = √(Iout,max² + ΔIL² / 12)\n"
-                + "Ceff = Cnom × (1 − 容量折减)\nΔVout ≤ ΔIL / (8 × fs × Ceff) + ΔIL × ESR\n\n"
-                + "采用 SI 单位计算。输出纹波为电容项与 ESR 项之和的保守预算。输入电容容量为忽略电感纹波的一阶估算，RMS 电流在输入区间内求最坏值。\n\n"
-                + "元件选型需核对控制器占空比与最小导通时间、开关损耗、器件耐压、电感饱和和温升、电容偏置曲线及负载暂态。",
-            FontSize = 12,
-            LineHeight = 21,
-            TextWrapping = TextWrapping.Wrap,
-            Margin = new Thickness(0, 12, 0, 8)
-        };
+        formulas.Content = formulaText;
         results.Children.Add(formulas);
         string version = UpdateService.CurrentVersion.ToString(3);
-        results.Children.Add(new TextBlock { Text = $"BUCK Calculator {version}  ·  Epiphany", FontSize = 11, Foreground = Muted, Margin = new Thickness(2, 14, 0, 4) });
+        results.Children.Add(new TextBlock { Text = $"BUCK / BOOST Calculator {version}  ·  Epiphany", FontSize = 11, Foreground = Muted, Margin = new Thickness(2, 14, 0, 4) });
         resultScroll.Content = results;
         resultScroll.HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled;
         return resultScroll;
@@ -584,7 +610,9 @@ public sealed class MainWindow : Window
     private UIElement InputField(string key, string label, string unit)
     {
         var panel = new StackPanel();
-        panel.Children.Add(new TextBlock { Text = label, Foreground = Muted, FontSize = 11.5, Margin = new Thickness(0, 0, 0, 5) });
+        var fieldLabel = new TextBlock { Text = label, Foreground = Muted, FontSize = 11.5, Margin = new Thickness(0, 0, 0, 5), TextWrapping = TextWrapping.Wrap };
+        fieldLabels.Add(key, fieldLabel);
+        panel.Children.Add(fieldLabel);
         var entry = new Grid();
         entry.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         entry.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -634,7 +662,7 @@ public sealed class MainWindow : Window
         metricPanel.Children.Clear();
         notePanel.Children.Clear();
         waveform.Children.Clear();
-        waveformDescription.Text = "计算后显示最高输入电压、电感下限下的稳态波形。";
+        waveformDescription.Text = "计算后显示同一输入工况、电感下限下的稳态波形。";
     }
 
     private void ApplyExample(int index)
@@ -643,16 +671,29 @@ public sealed class MainWindow : Window
         firstExampleButton.Foreground = index == 0 ? Ink : Muted;
         secondExampleButton.Background = index == 1 ? Brushes.White : Brushes.Transparent;
         secondExampleButton.Foreground = index == 1 ? Ink : Muted;
-        var input = index == 1
-            ? new BuckInputs { VinMin = 18, VinMax = 30, Vout = 12, IoutMax = 3, IoutOperating = 3, FrequencyKhz = 300, OutputRippleMv = 30 }
-            : new BuckInputs();
+        BuckInputs input;
+        if (selectedTopology == ConverterTopology.Boost)
+        {
+            input = index == 1
+                ? new BuckInputs { Topology = ConverterTopology.Boost, VinMin = 9, VinMax = 16, Vout = 24, IoutMax = 1, IoutOperating = 1, FrequencyKhz = 300, OutputRippleMv = 100, EsrMilliohm = 5 }
+                : new BuckInputs { Topology = ConverterTopology.Boost, VinMin = 5, VinMax = 9, Vout = 12, IoutMax = 1, IoutOperating = 1, OutputRippleMv = 60, EsrMilliohm = 5 };
+        }
+        else
+        {
+            input = index == 1
+                ? new BuckInputs { VinMin = 18, VinMax = 30, Vout = 12, IoutMax = 3, IoutOperating = 3, FrequencyKhz = 300, OutputRippleMv = 30 }
+                : new BuckInputs();
+        }
         SetInputs(input);
         Calculate();
         resultScroll.ScrollToTop();
+        inputScroll.ScrollToTop();
     }
 
     private void SetInputs(BuckInputs input)
     {
+        selectedTopology = input.Topology;
+        UpdateTopologyDisplay();
         updatingInputs = true;
         foreach (var property in typeof(BuckInputs).GetProperties())
         {
@@ -661,6 +702,55 @@ public sealed class MainWindow : Window
         }
         updatingInputs = false;
         MarkInputsChanged();
+    }
+
+    private void SwitchTopology(ConverterTopology topology)
+    {
+        if (selectedTopology == topology)
+            return;
+        topologyInputs[selectedTopology] = fields.ToDictionary(field => field.Key, field => field.Value.Text);
+        selectedTopology = topology;
+        UpdateTopologyDisplay();
+        if (topologyInputs.TryGetValue(topology, out var previousInputs))
+        {
+            updatingInputs = true;
+            foreach (var field in fields)
+                field.Value.Text = previousInputs[field.Key];
+            updatingInputs = false;
+            firstExampleButton.Background = Brushes.Transparent;
+            firstExampleButton.Foreground = Muted;
+            secondExampleButton.Background = Brushes.Transparent;
+            secondExampleButton.Foreground = Muted;
+            MarkInputsChanged();
+            Calculate();
+        }
+        else
+        {
+            ApplyExample(0);
+        }
+        resultScroll.ScrollToTop();
+    }
+
+    private void UpdateTopologyDisplay()
+    {
+        bool boost = selectedTopology == ConverterTopology.Boost;
+        buckButton.Background = boost ? Brushes.Transparent : Brushes.White;
+        buckButton.Foreground = boost ? Muted : Ink;
+        boostButton.Background = boost ? Brushes.White : Brushes.Transparent;
+        boostButton.Foreground = boost ? Ink : Muted;
+        firstExampleButton.Content = boost ? "12 V / 1 A" : "5 V / 2 A";
+        firstExampleButton.ToolTip = boost ? "载入 5–9 V 输入、12 V / 1 A 升压示例" : "载入 9–16 V 输入、5 V / 2 A 降压示例";
+        secondExampleButton.Content = boost ? "24 V / 1 A" : "12 V / 3 A";
+        secondExampleButton.ToolTip = boost ? "载入 9–16 V 输入、24 V / 1 A 升压示例" : "载入 18–30 V 输入、12 V / 3 A 降压示例";
+        string rippleLabel = boost ? "纹波 / 当地 IL,avg" : "纹波 / 额定 Iout";
+        fieldLabels["RipplePercent"].Text = rippleLabel;
+        fields["RipplePercent"].ToolTip = boost ? "ΔIL / IL,avg × 100%，在输入区间各工况满足目标" : "ΔIL / Iout,max × 100%";
+        System.Windows.Automation.AutomationProperties.SetName(fields["RipplePercent"], rippleLabel);
+        topologyTitle.Text = boost ? "BOOST 升压拓扑" : "BUCK 降压拓扑";
+        topologyDiagram.SetTopology(selectedTopology);
+        formulaText.Text = "固定频率、理想 CCM 稳态模型。以下关系使用 SI 单位，ΔIL 为电感电流峰峰值。\n\n"
+            + ReportExporter.GetFormulaText(selectedTopology)
+            + "\n\n元件选型需核对控制器占空比与最小导通时间、开关损耗、器件耐压、电感饱和和温升、电容偏置曲线及负载暂态。";
     }
 
     private double Read(string key)
@@ -678,6 +768,7 @@ public sealed class MainWindow : Window
 
     private BuckInputs ReadInputs() => new()
     {
+        Topology = selectedTopology,
         VinMin = Read("VinMin"),
         VinMax = Read("VinMax"),
         Vout = Read("Vout"),
@@ -698,7 +789,8 @@ public sealed class MainWindow : Window
     {
         try
         {
-            var result = BuckMath.Calculate(ReadInputs());
+            var input = ReadInputs();
+            var result = input.Topology == ConverterTopology.Boost ? BoostMath.Calculate(input) : BuckMath.Calculate(input);
             CurrentResult = result;
             exportButton.IsEnabled = true;
             ShowResult(result);
@@ -725,9 +817,9 @@ public sealed class MainWindow : Window
         summaryValues["ripple"].Text = Number(result.TotalOutputRippleMv);
         summaryDetails["ripple"].Text = $"纹波预算 {Number(result.Inputs.OutputRippleMv)} mVpp";
         summaryValues["ripple"].Foreground = result.TotalOutputRippleMv <= result.Inputs.OutputRippleMv ? Accent : ColorBrush("#A56013");
-        modeStatus.Text = $"工作负载 {Number(result.Inputs.IoutOperating)} A · {result.OperatingMode}    |    最坏工况临界电流 {Number(result.BoundaryCurrent)} A";
+        modeStatus.Text = $"工作负载 {Number(result.Inputs.IoutOperating)} A · {result.OperatingMode}    |    最坏工况临界输出电流 {Number(result.BoundaryCurrent)} A";
         modeStatus.Foreground = result.OperatingMode.StartsWith("CCM", StringComparison.Ordinal) ? Accent : ColorBrush("#A56013");
-        waveformDescription.Text = $"Vin = {Number(result.Inputs.VinMax)} V  ·  Lmin = {Number(result.MinimumInductanceUh)} µH  ·  ΔIL = {Number(result.CurrentRipple)} App  ·  周期 {Number(1000 / result.Inputs.FrequencyKhz)} µs";
+        waveformDescription.Text = $"Vin = {Number(result.WaveformVin)} V  ·  Lmin = {Number(result.MinimumInductanceUh)} µH  ·  IL,avg = {Number(result.WaveformAverageCurrent)} A  ·  ΔIL = {Number(result.WaveformRipple)} App  ·  周期 {Number(1000 / result.Inputs.FrequencyKhz)} µs";
         metricPanel.Children.Clear();
         string section = "";
         foreach (var metric in result.Metrics)
@@ -778,21 +870,21 @@ public sealed class MainWindow : Window
         const double top = 18;
         const double plotHeight = 125;
         double plotWidth = Math.Max(10, width - left - 25);
-        double maxCurrent = result.PeakCurrent * 1.12;
-        double minCurrent = Math.Max(0, result.ValleyCurrent - result.CurrentRipple * 0.38);
-        double span = Math.Max(result.CurrentRipple * 1.7, maxCurrent - minCurrent);
+        double maxCurrent = result.WaveformPeakCurrent * 1.12;
+        double minCurrent = Math.Max(0, result.WaveformValleyCurrent - result.WaveformRipple * 0.38);
+        double span = Math.Max(result.WaveformRipple * 1.7, maxCurrent - minCurrent);
         maxCurrent = minCurrent + span;
         double Y(double current) => top + plotHeight * (maxCurrent - current) / span;
 
-        double duty = result.Inputs.Vout / result.Inputs.VinMax;
+        double duty = result.WaveformDuty;
         double periodWidth = plotWidth / 2;
         var onRegion = new Rectangle { Width = periodWidth * duty, Height = plotHeight, Fill = ColorBrush("#F0F6FF") };
         Canvas.SetLeft(onRegion, left);
         Canvas.SetTop(onRegion, top);
         waveform.Children.Add(onRegion);
-        foreach (double current in new[] { result.ValleyCurrent, result.Inputs.IoutMax, result.PeakCurrent })
+        foreach (double current in new[] { result.WaveformValleyCurrent, result.WaveformAverageCurrent, result.WaveformPeakCurrent })
         {
-            AddLine(left, Y(current), left + plotWidth, Y(current), Line, 1, current == result.Inputs.IoutMax);
+            AddLine(left, Y(current), left + plotWidth, Y(current), Line, 1, current == result.WaveformAverageCurrent);
             AddPlotText(Number(current) + " A", 0, Y(current) - 8, Muted);
         }
         AddLine(left, top + plotHeight, left + plotWidth, top + plotHeight, Line, 1);
@@ -800,9 +892,9 @@ public sealed class MainWindow : Window
         for (int cycle = 0; cycle < 2; cycle++)
         {
             double start = left + periodWidth * cycle;
-            trace.Points.Add(new Point(start, Y(result.ValleyCurrent)));
-            trace.Points.Add(new Point(start + periodWidth * duty, Y(result.PeakCurrent)));
-            trace.Points.Add(new Point(start + periodWidth, Y(result.ValleyCurrent)));
+            trace.Points.Add(new Point(start, Y(result.WaveformValleyCurrent)));
+            trace.Points.Add(new Point(start + periodWidth * duty, Y(result.WaveformPeakCurrent)));
+            trace.Points.Add(new Point(start + periodWidth, Y(result.WaveformValleyCurrent)));
         }
         waveform.Children.Add(trace);
         AddPlotText("0", left - 3, top + plotHeight + 9, Muted);
@@ -836,8 +928,8 @@ public sealed class MainWindow : Window
             return;
         var dialog = new SaveFileDialog
         {
-            Title = "导出本轮 BUCK 计算报告",
-            FileName = $"BUCK-{Number(CurrentResult.Inputs.Vout)}V-{Number(CurrentResult.Inputs.IoutMax)}A-计算报告",
+            Title = $"导出本轮 {CurrentResult.Inputs.Topology.ToString().ToUpperInvariant()} 计算报告",
+            FileName = $"{CurrentResult.Inputs.Topology.ToString().ToUpperInvariant()}-{Number(CurrentResult.Inputs.Vout)}V-{Number(CurrentResult.Inputs.IoutMax)}A-计算报告",
             Filter = "Markdown 报告 (*.md)|*.md|CSV 表格 (*.csv)|*.csv",
             DefaultExt = ".md",
             AddExtension = true
@@ -904,6 +996,78 @@ public sealed class MainWindow : Window
         File.WriteAllText(System.IO.Path.Combine(outputDirectory, "sample-report.csv"), ReportExporter.ToCsv(finalResult), new UTF8Encoding(true));
         results.Add("PASS current result exported as Markdown and UTF-8 CSV");
 
+        topologyDiagram.AssertElectricalLayout();
+        if (topologyDiagram.Topology != ConverterTopology.Buck)
+            throw new InvalidOperationException("默认 BUCK 拓扑未显示。");
+        results.Add("PASS BUCK topology labels, high-side switch and freewheel diode polarity");
+        ShowCompactPane(true);
+        resultScroll.ScrollToTop();
+        UpdateLayout();
+        SaveScreenshot(System.IO.Path.Combine(outputDirectory, "buck-topology.png"), topologyDiagram);
+
+        fields["VinMin"].Text = "unfinished";
+        boostButton.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+        if (CurrentResult?.Inputs.Topology != ConverterTopology.Boost || CurrentResult.Inputs.Vout != 12 || selectedTopology != ConverterTopology.Boost)
+            throw new InvalidOperationException("首次切换 BOOST 未载入有效升压示例。");
+        topologyDiagram.AssertElectricalLayout();
+        if (topologyDiagram.Topology != ConverterTopology.Boost || !fieldLabels["RipplePercent"].Text.Contains("IL,avg", StringComparison.Ordinal))
+            throw new InvalidOperationException("BOOST 拓扑或纹波比例口径未切换。");
+        results.Add("PASS BOOST selection through segmented button, local-average ripple label and low-side topology");
+        var boostResult = CurrentResult;
+        if (boostResult.WaveformVin != boostResult.Inputs.VinMin
+            || Math.Abs(boostResult.WaveformDuty - (1 - boostResult.WaveformVin / boostResult.Inputs.Vout)) > 1e-10
+            || Math.Abs(boostResult.WaveformAverageCurrent - boostResult.Inputs.IoutMax * boostResult.Inputs.Vout / boostResult.WaveformVin) > 1e-10
+            || Math.Abs(boostResult.WaveformPeakCurrent - boostResult.WaveformAverageCurrent - boostResult.WaveformRipple / 2) > 1e-10)
+            throw new InvalidOperationException("BOOST 波形未使用同一输入工况的数据。");
+        DrawWaveform();
+        var boostTrace = waveform.Children.OfType<Polyline>().Single();
+        double expectedPeakX = 62 + (waveform.ActualWidth - 87) / 2 * boostResult.WaveformDuty;
+        if (boostTrace.Points.Count != 6 || Math.Abs(boostTrace.Points[1].X - expectedPeakX) > 0.1
+            || !waveform.Children.OfType<TextBlock>().Any(label => label.Text == Number(boostResult.WaveformAverageCurrent) + " A"))
+            throw new InvalidOperationException("BOOST 波形绘图的占空比或平均电流参考线错误。");
+        results.Add("PASS BOOST waveform duty, average and extrema belong to the same Vin operating point");
+        File.WriteAllText(System.IO.Path.Combine(outputDirectory, "boost-report.md"), ReportExporter.ToMarkdown(boostResult), new UTF8Encoding(false));
+        File.WriteAllText(System.IO.Path.Combine(outputDirectory, "boost-report.csv"), ReportExporter.ToCsv(boostResult), new UTF8Encoding(true));
+        if (!ReportExporter.ToMarkdown(boostResult).StartsWith("# BOOST", StringComparison.Ordinal)
+            || !ReportExporter.ToCsv(boostResult).Contains("\"BOOST\"", StringComparison.Ordinal)
+            || !formulaText.Text.Contains("D = 1 − Vin / Vout", StringComparison.Ordinal))
+            throw new InvalidOperationException("BOOST 报告或界面公式未切换。");
+        results.Add("PASS BOOST-specific Markdown, CSV and shared formula text");
+        resultScroll.ScrollToTop();
+        ShowCompactPane(true);
+        UpdateLayout();
+        SaveScreenshot(System.IO.Path.Combine(outputDirectory, "boost-desktop.png"));
+        SaveScreenshot(System.IO.Path.Combine(outputDirectory, "boost-topology.png"), topologyDiagram);
+        secondExampleButton.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+        if (CurrentResult?.Inputs.Topology != ConverterTopology.Boost || CurrentResult.Inputs.Vout != 24 || CurrentResult.Inputs.VinMax != 16)
+            throw new InvalidOperationException("BOOST 第二示例加载失败。");
+        results.Add("PASS BOOST second example selected with 9–16 V input and 24 V output");
+        firstExampleButton.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+
+        fields["Vout"].Text = "4";
+        if (CurrentResult is not null || exportButton.IsEnabled)
+            throw new InvalidOperationException("BOOST 参数更改后仍可导出旧结果。");
+        calculateButton.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+        if (CurrentResult is not null || exportButton.IsEnabled || topologyDiagram.Topology != ConverterTopology.Boost)
+            throw new InvalidOperationException("非法升压电压通过校验或拓扑随错误消失。");
+        topologyDiagram.AssertElectricalLayout();
+        results.Add("PASS invalid BOOST voltage clears the result while keeping topology available");
+
+        buckButton.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+        if (fields["VinMin"].Text != "unfinished" || CurrentResult is not null || exportButton.IsEnabled)
+            throw new InvalidOperationException("切换模式时未保留 BUCK 尚未完成的输入。");
+        fields["VinMin"].Text = "10";
+        calculateButton.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+        boostButton.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+        if (fields["Vout"].Text != "4" || CurrentResult is not null)
+            throw new InvalidOperationException("切换模式时未保留 BOOST 非法输入。");
+        firstExampleButton.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+        buckButton.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+        if (CurrentResult?.Inputs.VinMin != 10 || CurrentResult.Inputs.Topology != ConverterTopology.Buck)
+            throw new InvalidOperationException("BUCK 参数恢复后未重新计算。");
+        results.Add("PASS each topology preserves its own valid and unfinished input text across switching");
+        firstExampleButton.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+
         resultScroll.ScrollToTop();
         ShowCompactPane(false);
         UpdateLayout();
@@ -919,6 +1083,12 @@ public sealed class MainWindow : Window
         CheckCompactLayout(outputDirectory, results, 760, 540, "desktop-compact");
         resultScroll.ScrollToEnd();
         SaveScreenshot(System.IO.Path.Combine(outputDirectory, "desktop-small-details.png"));
+        boostButton.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+        firstExampleButton.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+        CheckCompactLayout(outputDirectory, results, 900, 600, "boost-small");
+        CheckCompactLayout(outputDirectory, results, 760, 540, "boost-compact");
+        buckButton.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+        firstExampleButton.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
         var previewVersion = new Version(UpdateService.CurrentVersion.Major, UpdateService.CurrentVersion.Minor, Math.Max(0, UpdateService.CurrentVersion.Build) + 1);
         var previewUpdate = new AppUpdate(previewVersion, previewVersion.ToString(3),
             new Uri("https://github.com/Epiphany-Lucky/buck-calculator/releases/download/ui-preview/installer.exe"),
@@ -937,6 +1107,49 @@ public sealed class MainWindow : Window
         if (availableUpdate is not null || updateBanner.Visibility != Visibility.Collapsed || updateActionButton.Visibility != Visibility.Collapsed)
             throw new InvalidOperationException("后台检查无可用更新后仍显示旧版本通知。");
         results.Add("PASS automatic no-update response clears the previous persistent notice");
+        Width = 620;
+        Height = 420;
+        FitWindowToWorkArea();
+        foreach (var topology in new[] { ConverterTopology.Buck, ConverterTopology.Boost })
+        foreach (bool withUpdate in new[] { false, true })
+        {
+            SwitchTopology(topology);
+            ApplyExample(0);
+            DisplayUpdateCheckResult(withUpdate ? previewUpdate : null, false);
+            downloadProgress.Visibility = withUpdate ? Visibility.Visible : Visibility.Collapsed;
+            if (withUpdate)
+                updateMessage.Text = string.Concat(Enumerable.Repeat("更新服务状态说明，请检查网络连接后重试。", 20));
+            ShowCompactPane(false);
+            UpdateLayout();
+            if (inputScroll.ViewportHeight < 36)
+                throw new InvalidOperationException("最小窗口的参数滚动区不足一行输入框高度。");
+            inputScroll.ScrollToEnd();
+            UpdateLayout();
+            fields["Vout"].BringIntoView();
+            UpdateLayout();
+            var entryBounds = fields["Vout"].TransformToAncestor(inputScroll).TransformBounds(new Rect(fields["Vout"].RenderSize));
+            if (entryBounds.Top < -1 || entryBounds.Bottom > inputScroll.ActualHeight + 1)
+                throw new InvalidOperationException("最小窗口中无法滚动到完整参数输入框。");
+            inputScroll.ScrollToTop();
+            UpdateLayout();
+            var modeBounds = buckButton.TransformToAncestor(inputScroll).TransformBounds(new Rect(buckButton.RenderSize));
+            if (modeBounds.Top < 0 || modeBounds.Bottom > inputScroll.ActualHeight + 1)
+                throw new InvalidOperationException("最小窗口中无法滚动到拓扑切换按钮。");
+            calculateButton.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+            if (CurrentResult?.Inputs.Topology != topology)
+                throw new InvalidOperationException("最小窗口计算按钮未执行所选拓扑计算。");
+            ShowCompactPane(false);
+            status.Text = string.Concat(Enumerable.Repeat("完整状态说明可悬停查看。", 30));
+            UpdateLayout();
+            AssertComputeButtonInClient();
+            AssertWindowFitsWorkArea(results, $"minimum {topology} with update {withUpdate}");
+            SaveScreenshot(System.IO.Path.Combine(outputDirectory, $"minimum-{topology}-{(withUpdate ? "update" : "plain")}.png"));
+            results.Add($"PASS {topology} minimum 620x420 DIP input rows, mode navigation and Calculate footer with update {withUpdate}");
+        }
+        downloadProgress.Visibility = Visibility.Collapsed;
+        DisplayUpdateCheckResult(null, false);
+        SwitchTopology(ConverterTopology.Buck);
+        ApplyExample(0);
         Width = startupWidth;
         Height = startupHeight;
         FitWindowToWorkArea();
@@ -958,15 +1171,22 @@ public sealed class MainWindow : Window
             throw new InvalidOperationException("紧凑窗口的参数页或计算按钮不可用。");
         AssertComputeButtonInClient();
         SaveScreenshot(System.IO.Path.Combine(outputDirectory, fileName + "-parameters.png"));
-        fields["IoutOperating"].Text = "1.8";
+        double operatingLoad = Read("IoutMax") * 0.9;
+        fields["IoutOperating"].Text = operatingLoad.ToString("G10", CultureInfo.InvariantCulture);
         calculateButton.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
         UpdateLayout();
         DrawWaveform();
         UpdateLayout();
-        if (CurrentResult?.Inputs.IoutOperating != 1.8 || resultScroll.Visibility != Visibility.Visible || !exportButton.IsEnabled || waveform.Children.Count == 0)
+        if (CurrentResult?.Inputs.IoutOperating != operatingLoad || resultScroll.Visibility != Visibility.Visible || !exportButton.IsEnabled || waveform.Children.Count == 0)
             throw new InvalidOperationException("紧凑窗口计算后结果页、导出或波形不可用。");
+        resultScroll.ScrollToTop();
+        UpdateLayout();
+        topologyDiagram.AssertElectricalLayout();
+        var plotBounds = topologyDiagram.TransformToAncestor(resultScroll).TransformBounds(new Rect(topologyDiagram.RenderSize));
+        if (plotBounds.Left < 0 || plotBounds.Right > resultScroll.ActualWidth + 1 || topologyDiagram.ActualHeight <= 0 || resultScroll.ScrollableHeight <= 0)
+            throw new InvalidOperationException("紧凑窗口拓扑图超出横向范围或结果无法纵向滚动。");
         SaveScreenshot(System.IO.Path.Combine(outputDirectory, fileName + ".png"));
-        results.Add($"PASS compact calculation and visible footer at {Width:0}x{Height:0} DIP");
+        results.Add($"PASS {selectedTopology} compact calculation, topology, scrolling and visible footer at {Width:0}x{Height:0} DIP");
     }
 
     private void AssertComputeButtonInClient()
@@ -977,9 +1197,9 @@ public sealed class MainWindow : Window
             throw new InvalidOperationException("紧凑参数页的计算按钮超出客户区。");
     }
 
-    private void SaveScreenshot(string path)
+    private void SaveScreenshot(string path, FrameworkElement? element = null)
     {
-        var target = (FrameworkElement)Content;
+        var target = element ?? (FrameworkElement)Content;
         target.UpdateLayout();
         int width = Math.Max(1, (int)Math.Ceiling(target.ActualWidth));
         int height = Math.Max(1, (int)Math.Ceiling(target.ActualHeight));

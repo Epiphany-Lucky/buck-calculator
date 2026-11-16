@@ -1,6 +1,6 @@
 param(
     [ValidatePattern('^\d+\.\d+\.\d+$')]
-    [string]$Version = '1.1.1',
+    [string]$Version = '1.2.0',
     [switch]$SkipSmokeTest,
     [switch]$VerifyInstall
 )
@@ -89,7 +89,7 @@ try {
         sha256 = $hash
         size = (Get-Item -LiteralPath $releaseMsi).Length
         releaseUrl = "https://github.com/Epiphany-Lucky/buck-calculator/releases/tag/v$Version"
-        releaseNotes = '更新检查改用稳定版本清单，改善安装升级与多显示器窗口适配。'
+        releaseNotes = '新增 BOOST 升压计算与 BUCK / BOOST 拓扑图，支持双模式切换、全输入范围电流与纹波检查，并保留屏幕自适应和软件内安装更新。'
     }
     $manifestFile = Join-Path $artifactsDirectory 'update.json'
     [System.IO.File]::WriteAllText($manifestFile, (($updateManifest | ConvertTo-Json -Depth 3) + [Environment]::NewLine),

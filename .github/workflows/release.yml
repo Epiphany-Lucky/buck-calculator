@@ -23,8 +23,48 @@ jobs:
       - name: Check, publish and verify application
         shell: pwsh
         run: |
-          $version = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME.Substring(1) } else { '1.1.1' }
+          $version = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME.Substring(1) } else { '1.2.0' }
           ./scripts/build.ps1 -Version $version -VerifyInstall
+      - name: Verify upgrade from the official 1.1.1 installer
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME.Substring(1) } else { '1.2.0' }
+          $artifacts = Join-Path $env:GITHUB_WORKSPACE 'artifacts'
+          $verification = Join-Path $artifacts 'installer-test'
+          $fixtureEvidence = Join-Path $artifacts 'fixture-upgrade-verification'
+          $officialEvidence = Join-Path $artifacts 'official-upgrade-verification'
+          New-Item -ItemType Directory -Path $fixtureEvidence, $officialEvidence -Force | Out-Null
+          Get-ChildItem -LiteralPath $verification -Force | Copy-Item -Destination $fixtureEvidence -Recurse
+          $fixtureResults = Get-Content -LiteralPath (Join-Path $fixtureEvidence 'installer-results.txt')
+          if ($fixtureResults -match '^(SKIPPED|FAIL|PENDING):' -or
+              @($fixtureResults | Where-Object { $_ -like 'PASS:*' }).Count -lt 8) {
+            throw 'The generated previous-version fixture did not complete all installation checks.'
+          }
+          $previousDirectory = Join-Path $artifacts 'official-previous'
+          New-Item -ItemType Directory -Path $previousDirectory -Force | Out-Null
+          gh release download v1.1.1 --pattern 'BuckCalculator-v1.1.1-win-x64.msi' --dir $previousDirectory
+          if ($LASTEXITCODE -ne 0) { throw 'The official 1.1.1 installer could not be downloaded.' }
+          $previousMsi = Join-Path $previousDirectory 'BuckCalculator-v1.1.1-win-x64.msi'
+          $previousHash = (Get-FileHash -LiteralPath $previousMsi -Algorithm SHA256).Hash
+          if ($previousHash -ne 'A2DC35BDC8CE3888583F7E3563D38534245894A43F0858BDECA3D68FC5AE9B16') {
+            throw 'The official 1.1.1 installer differs from its pinned SHA-256.'
+          }
+          Set-Content -LiteralPath (Join-Path $officialEvidence 'previous-installer-sha256.txt') -Value $previousHash
+          try {
+            ./installer/Verify-Install.ps1 -MsiPath (Join-Path $artifacts "BuckCalculator-v$version-win-x64.msi") `
+              -PreviousMsiPath $previousMsi -UpdateHelperPath (Join-Path $artifacts 'publish/BuckCalculator.exe')
+          } finally {
+            Get-ChildItem -LiteralPath $verification -Force | Copy-Item -Destination $officialEvidence -Recurse
+          }
+          $officialResults = Get-Content -LiteralPath (Join-Path $officialEvidence 'installer-results.txt')
+          if ($officialResults -match '^(SKIPPED|FAIL|PENDING):' -or
+              @($officialResults | Where-Object { $_ -like 'PASS:*' }).Count -lt 8) {
+            throw 'Upgrade from the official 1.1.1 installer did not complete all installation checks.'
+          }
       - name: Upload downloadable package
         uses: actions/upload-artifact@v7.0.2
         with:
@@ -43,6 +83,8 @@ jobs:
           path: |
             artifacts/smoke-test/
             artifacts/installer-test/
+            artifacts/fixture-upgrade-verification/
+            artifacts/official-upgrade-verification/
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
@@ -68,6 +110,6 @@ jobs:
           if ($releaseExists) {
             gh release upload $env:RELEASE_TAG @assets --clobber
           } else {
-            gh release create $env:RELEASE_TAG @assets --verify-tag --title "BUCK 计算器 $env:RELEASE_TAG" --generate-notes
+            gh release create $env:RELEASE_TAG @assets --verify-tag --title "BUCK / BOOST 计算器 $env:RELEASE_TAG" --generate-notes
           }
           if ($LASTEXITCODE -ne 0) { throw 'GitHub Release publication failed.' }
