@@ -1,0 +1,10 @@
+**/bin/
+**/obj/
+artifacts/
+.ai-governance/
+docs/历史档案/
+.vs/
+.idea/
+*.user
+*.suo
+*.tmp
