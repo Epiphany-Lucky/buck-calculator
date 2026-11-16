@@ -1,7 +1,8 @@
 param(
-    [ValidatePattern('^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$')]
-    [string]$Version = '1.0.0',
-    [switch]$SkipSmokeTest
+    [ValidatePattern('^\d+\.\d+\.\d+$')]
+    [string]$Version = '1.1.0',
+    [switch]$SkipSmokeTest,
+    [switch]$VerifyInstall
 )
 
 $ErrorActionPreference = 'Stop'
@@ -10,38 +11,34 @@ $artifactsDirectory = Join-Path $projectRoot 'artifacts'
 $publishDirectory = Join-Path $artifactsDirectory 'publish'
 $smokeDirectory = Join-Path $artifactsDirectory 'smoke-test'
 $projectFile = Join-Path $projectRoot 'src\BuckCalculator\BuckCalculator.csproj'
-$checksProject = Join-Path $projectRoot 'tests\BuckCalculator.Checks.csproj'
-$readmeFile = Join-Path $projectRoot 'README.md'
 
 New-Item -ItemType Directory -Path $artifactsDirectory, $publishDirectory -Force | Out-Null
-
 Push-Location $projectRoot
 try {
-    Write-Host 'Running calculation and report checks...'
-    & dotnet run --project $checksProject --configuration Release
-    if ($LASTEXITCODE -ne 0) {
-        throw "Calculation checks failed with exit code $LASTEXITCODE."
+    foreach ($checksProject in @('tests\BuckCalculator.Checks.csproj', 'tests\BuckCalculator.UpdateChecks.csproj')) {
+        Write-Host "Running $checksProject..."
+        & dotnet run --project $checksProject --configuration Release
+        if ($LASTEXITCODE -ne 0) {
+            throw "Checks failed for $checksProject with exit code $LASTEXITCODE."
+        }
     }
 
-    Write-Host 'Publishing self-contained Windows x64 application...'
+    Write-Host 'Publishing self-contained Windows x64 application for the installer...'
     & dotnet publish $projectFile --configuration Release --runtime win-x64 --self-contained true `
         -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true `
         -p:DebugType=None -p:DebugSymbols=false "-p:Version=$Version" --output $publishDirectory
     if ($LASTEXITCODE -ne 0) {
         throw "Application publish failed with exit code $LASTEXITCODE."
     }
-
     $publishedExe = Join-Path $publishDirectory 'BuckCalculator.exe'
     if (-not (Test-Path -LiteralPath $publishedExe -PathType Leaf)) {
-        throw 'The published BuckCalculator.exe is missing.'
+        throw 'The published application required by the MSI is missing.'
     }
 
     if (-not $SkipSmokeTest) {
         New-Item -ItemType Directory -Path $smokeDirectory -Force | Out-Null
         $smokeMarker = Join-Path $smokeDirectory 'smoke-results.txt'
-        if (Test-Path -LiteralPath $smokeMarker) {
-            Remove-Item -LiteralPath $smokeMarker
-        }
+        if (Test-Path -LiteralPath $smokeMarker) { Remove-Item -LiteralPath $smokeMarker }
         Write-Host 'Verifying the published application and rendering its window...'
         $smokeProcess = Start-Process -FilePath $publishedExe `
             -ArgumentList @('--smoke-test', ('"{0}"' -f $smokeDirectory)) `
@@ -59,32 +56,55 @@ try {
         Get-Content -LiteralPath $smokeMarker
     }
 
-    $releaseName = "BuckCalculator-v$Version-win-x64"
-    $releaseExe = Join-Path $artifactsDirectory "$releaseName.exe"
-    $releaseZip = Join-Path $artifactsDirectory "$releaseName.zip"
-    Copy-Item -LiteralPath $publishedExe -Destination $releaseExe -Force
-    Compress-Archive -LiteralPath @($publishedExe, $readmeFile) -DestinationPath $releaseZip -Force
-    Add-Type -AssemblyName System.IO.Compression.FileSystem
-    $archive = [System.IO.Compression.ZipFile]::Open($releaseZip, [System.IO.Compression.ZipArchiveMode]::Update)
-    try {
-        $screenshotFile = Join-Path $smokeDirectory 'desktop-default.png'
-        if ($SkipSmokeTest) { $screenshotFile = Join-Path $projectRoot 'docs\screenshot.png' }
-        [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
-            $archive, $screenshotFile, 'docs/screenshot.png',
-            [System.IO.Compression.CompressionLevel]::Optimal) | Out-Null
+    $wixCommand = Get-Command wix -ErrorAction SilentlyContinue
+    $wixExecutable = if ($wixCommand) { $wixCommand.Source } else { '' }
+    if (-not $wixExecutable -or ((& $wixExecutable --version) -notlike '6.0.2*')) {
+        $toolDirectory = Join-Path $artifactsDirectory 'tools'
+        $wixExecutable = Join-Path $toolDirectory 'wix.exe'
+        if (-not (Test-Path -LiteralPath $wixExecutable -PathType Leaf)) {
+            & dotnet tool install --tool-path $toolDirectory wix --version 6.0.2
+            if ($LASTEXITCODE -ne 0) { throw 'WiX 6.0.2 installation failed.' }
+        }
+        if ((& $wixExecutable --version) -notlike '6.0.2*') { throw 'WiX 6.0.2 is required.' }
     }
-    finally {
-        $archive.Dispose()
-    }
+    & $wixExecutable extension add --global WixToolset.UI.wixext/6.0.2
+    if ($LASTEXITCODE -ne 0) { throw 'The WiX 6.0.2 UI extension is unavailable.' }
 
-    $hashLines = foreach ($releaseFile in @($releaseExe, $releaseZip)) {
-        $hash = (Get-FileHash -LiteralPath $releaseFile -Algorithm SHA256).Hash.ToLowerInvariant()
-        '{0}  {1}' -f $hash, (Split-Path -Leaf $releaseFile)
-    }
+    $releaseMsi = Join-Path $artifactsDirectory "BuckCalculator-v$Version-win-x64.msi"
+    $cabinetCache = Join-Path $artifactsDirectory 'wix-cabinet-cache'
+    Write-Host 'Building the Chinese per-user Windows Installer package...'
+    & $wixExecutable build 'installer\Package.wxs' -arch x64 -culture zh-cn `
+        -ext WixToolset.UI.wixext/6.0.2 -d "Version=$Version" `
+        -d "PublishDirectory=$publishDirectory" -d "ProjectRoot=$projectRoot" `
+        -cc $cabinetCache -pdbtype none -o $releaseMsi
+    if ($LASTEXITCODE -ne 0) { throw "MSI build failed with exit code $LASTEXITCODE." }
+
+    $hash = (Get-FileHash -LiteralPath $releaseMsi -Algorithm SHA256).Hash.ToLowerInvariant()
     $checksumFile = Join-Path $artifactsDirectory 'SHA256SUMS.txt'
-    [System.IO.File]::WriteAllLines($checksumFile, $hashLines, [System.Text.UTF8Encoding]::new($false))
-    Write-Host "Release files are ready in $artifactsDirectory"
-    Get-Item -LiteralPath $releaseExe, $releaseZip, $checksumFile | Select-Object Name, Length
+    [System.IO.File]::WriteAllText($checksumFile, ('{0}  {1}{2}' -f $hash, (Split-Path -Leaf $releaseMsi), [Environment]::NewLine),
+        [System.Text.UTF8Encoding]::new($false))
+
+    if ($VerifyInstall) {
+        if ([Version]::Parse($Version) -le [Version]'1.0.9') {
+            throw 'The upgrade-verification target must be newer than the 1.0.9 fixture.'
+        }
+        $previousVersion = '1.0.9'
+        $previousPublish = Join-Path $artifactsDirectory 'upgrade-fixture\publish'
+        & dotnet publish $projectFile --configuration Release --runtime win-x64 --self-contained true `
+            -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true `
+            -p:DebugType=None -p:DebugSymbols=false "-p:Version=$previousVersion" --output $previousPublish
+        if ($LASTEXITCODE -ne 0) { throw 'The previous-version application fixture could not be published.' }
+        $previousMsi = Join-Path $artifactsDirectory 'installer-previous-version.msi'
+        & $wixExecutable build 'installer\Package.wxs' -arch x64 -culture zh-cn `
+            -ext WixToolset.UI.wixext/6.0.2 -d "Version=$previousVersion" `
+            -d "PublishDirectory=$previousPublish" -d "ProjectRoot=$projectRoot" `
+            -cc $cabinetCache -pdbtype none -o $previousMsi
+        if ($LASTEXITCODE -ne 0) { throw 'The upgrade-verification fixture could not be built.' }
+        & (Join-Path $projectRoot 'installer\Verify-Install.ps1') -MsiPath $releaseMsi `
+            -PreviousMsiPath $previousMsi -UpdateHelperPath $publishedExe
+    }
+    Write-Host "Installer release files are ready in $artifactsDirectory"
+    Get-Item -LiteralPath $releaseMsi, $checksumFile | Select-Object Name, Length
 }
 finally {
     Pop-Location

@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Windows;
 using System.Windows.Controls;
@@ -8,6 +9,8 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Shapes;
+using System.Windows.Interop;
+using System.Windows.Threading;
 using Microsoft.Win32;
 
 namespace BuckCalculator;
@@ -32,17 +35,44 @@ public sealed class MainWindow : Window
     private readonly Dictionary<string, TextBlock> summaryDetails = [];
     private readonly Button firstExampleButton = new() { Content = "5 V / 2 A", Width = 99, Height = 30, ToolTip = "载入 9–16 V 输入、5 V / 2 A 示例" };
     private readonly Button secondExampleButton = new() { Content = "12 V / 3 A", Width = 104, Height = 30, ToolTip = "载入 18–30 V 输入、12 V / 3 A 示例" };
+    private readonly Button checkUpdatesButton = new() { Content = "检查更新", MinWidth = 92, Height = 36, Margin = new Thickness(0, 0, 10, 0) };
+    private readonly Button updateActionButton = new() { Content = "下载并更新", MinWidth = 112, Height = 34 };
+    private readonly TextBlock updateMessage = new() { TextWrapping = TextWrapping.Wrap, Foreground = Ink, FontSize = 12, VerticalAlignment = VerticalAlignment.Center };
+    private readonly ProgressBar downloadProgress = new() { Minimum = 0, Maximum = 100, Height = 5, Visibility = Visibility.Collapsed, Margin = new Thickness(0, 10, 0, 0) };
+    private readonly Button parametersTab = new() { Content = "设计参数", Height = 34, MinWidth = 118 };
+    private readonly Button resultsTab = new() { Content = "计算结果", Height = 34, MinWidth = 118 };
+    private readonly CancellationTokenSource updateCancellation = new();
+    private readonly DispatcherTimer updateTimer = new() { Interval = TimeSpan.FromHours(6) };
+    private readonly UpdateService updateService = new();
+    private readonly bool automaticUpdates;
+    private Grid workspace = null!;
+    private Grid header = null!;
+    private FrameworkElement headerTitle = null!;
+    private FrameworkElement headerTools = null!;
+    private FrameworkElement inputPane = null!;
+    private Border compactNavigation = null!;
+    private Border updateBanner = null!;
+    private HwndSource? nativeSource;
+    private AppUpdate? availableUpdate;
+    private bool checkingUpdates;
+    private bool downloadingUpdate;
+    private bool compactLayout;
+    private bool showingResults;
+    private bool windowClosed;
+    private bool fittingWindow;
     private bool updatingInputs;
 
     public BuckResult? CurrentResult { get; private set; }
 
-    public MainWindow()
+    public MainWindow(bool enableAutomaticUpdates = true)
     {
+        automaticUpdates = enableAutomaticUpdates;
         Title = "BUCK 计算器 · Epiphany";
-        Width = 1360;
-        Height = 920;
-        MinWidth = 1000;
-        MinHeight = 700;
+        var startupArea = GetStartupWorkArea();
+        Width = Math.Max(320, Math.Min(1240, startupArea.Width - 32));
+        Height = Math.Max(260, Math.Min(840, startupArea.Height - 32));
+        MinWidth = Math.Min(620, Width);
+        MinHeight = Math.Min(420, Height);
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
         Background = ColorBrush("#F5F5F7");
         Foreground = Ink;
@@ -54,29 +84,75 @@ public sealed class MainWindow : Window
 
         var layout = new Grid { Background = Background };
         layout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        layout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         layout.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         layout.Children.Add(BuildHeader());
+        updateBanner = BuildUpdateBanner();
+        Grid.SetRow(updateBanner, 1);
+        layout.Children.Add(updateBanner);
 
-        var workspace = new Grid { Margin = new Thickness(24, 0, 24, 20) };
+        workspace = new Grid { Margin = new Thickness(24, 0, 24, 20) };
         workspace.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(318) });
         workspace.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(20) });
         workspace.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        Grid.SetRow(workspace, 1);
+        workspace.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        workspace.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        Grid.SetRow(workspace, 2);
         layout.Children.Add(workspace);
 
-        workspace.Children.Add(BuildInputs());
+        inputPane = (FrameworkElement)BuildInputs();
+        Grid.SetRow(inputPane, 1);
+        workspace.Children.Add(inputPane);
         var results = BuildResults();
         Grid.SetColumn(results, 2);
+        Grid.SetRow(results, 1);
         workspace.Children.Add(results);
+        compactNavigation = BuildCompactNavigation();
+        workspace.Children.Add(compactNavigation);
         Content = layout;
 
-        calculateButton.Click += (_, _) => Calculate();
+        calculateButton.Click += (_, _) =>
+        {
+            Calculate();
+            if (CurrentResult is not null && compactLayout)
+                ShowCompactPane(true);
+        };
         exportButton.Click += (_, _) => ExportReport();
         waveform.SizeChanged += (_, _) => DrawWaveform();
         firstExampleButton.Click += (_, _) => ApplyExample(0);
         secondExampleButton.Click += (_, _) => ApplyExample(1);
+        checkUpdatesButton.Click += async (_, _) => await CheckForUpdatesAsync(true);
+        updateActionButton.Click += async (_, _) =>
+        {
+            if (availableUpdate is null)
+                await CheckForUpdatesAsync(true);
+            else
+                await InstallUpdateAsync();
+        };
+        updateTimer.Tick += async (_, _) => await CheckForUpdatesAsync(false);
         ApplyExample(0);
         Loaded += (_, _) => DrawWaveform();
+        SizeChanged += (_, _) => UpdateResponsiveLayout();
+        DpiChanged += (_, _) => Dispatcher.BeginInvoke(new Action(() => FitWindowToWorkArea()));
+        StateChanged += (_, _) =>
+        {
+            if (WindowState == WindowState.Normal)
+                Dispatcher.BeginInvoke(new Action(() => FitWindowToWorkArea()));
+        };
+        SourceInitialized += (_, _) =>
+        {
+            nativeSource = HwndSource.FromHwnd(new WindowInteropHelper(this).Handle);
+            nativeSource?.AddHook(WindowMessageHook);
+        };
+        ContentRendered += OnFirstContentRendered;
+        Closed += (_, _) =>
+        {
+            windowClosed = true;
+            updateTimer.Stop();
+            updateCancellation.Cancel();
+            updateCancellation.Dispose();
+            nativeSource?.RemoveHook(WindowMessageHook);
+        };
         CommandBindings.Add(new CommandBinding(ApplicationCommands.Save, (_, _) => ExportReport(), (_, e) => e.CanExecute = CurrentResult is not null));
         InputBindings.Add(new KeyBinding(ApplicationCommands.Save, Key.S, ModifierKeys.Control));
     }
@@ -141,13 +217,16 @@ public sealed class MainWindow : Window
 
     private UIElement BuildHeader()
     {
-        var header = new Grid { Margin = new Thickness(27, 22, 27, 20) };
+        header = new Grid { Margin = new Thickness(27, 22, 27, 20) };
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        header.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        header.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         var titlePanel = new StackPanel();
         titlePanel.Children.Add(new TextBlock { Text = "BUCK 计算器", FontSize = 27, FontWeight = FontWeights.SemiBold, Foreground = Ink });
         titlePanel.Children.Add(new TextBlock { Text = "降压电源参数设计与最坏工况检查", FontSize = 13, Foreground = Muted, Margin = new Thickness(0, 5, 0, 0) });
         header.Children.Add(titlePanel);
+        headerTitle = titlePanel;
         var tools = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
         tools.Children.Add(new TextBlock { Text = "示例", Foreground = Muted, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 10, 0) });
         var segments = new StackPanel { Orientation = Orientation.Horizontal };
@@ -158,10 +237,222 @@ public sealed class MainWindow : Window
         segments.Children.Add(firstExampleButton);
         segments.Children.Add(secondExampleButton);
         tools.Children.Add(new Border { Child = segments, Background = ColorBrush("#E8E8ED"), CornerRadius = new CornerRadius(9), Padding = new Thickness(3), Margin = new Thickness(0, 0, 12, 0) });
+        tools.Children.Add(checkUpdatesButton);
         tools.Children.Add(exportButton);
         Grid.SetColumn(tools, 1);
         header.Children.Add(tools);
+        headerTools = tools;
         return header;
+    }
+
+    private Border BuildCompactNavigation()
+    {
+        var choices = new StackPanel { Orientation = Orientation.Horizontal };
+        parametersTab.BorderThickness = new Thickness(0);
+        resultsTab.BorderThickness = new Thickness(0);
+        choices.Children.Add(parametersTab);
+        choices.Children.Add(resultsTab);
+        parametersTab.Click += (_, _) => ShowCompactPane(false);
+        resultsTab.Click += (_, _) => ShowCompactPane(true);
+        return new Border
+        {
+            Child = choices,
+            Background = ColorBrush("#E8E8ED"),
+            CornerRadius = new CornerRadius(9),
+            Padding = new Thickness(3),
+            Margin = new Thickness(0, 0, 0, 12),
+            HorizontalAlignment = HorizontalAlignment.Left,
+            Visibility = Visibility.Collapsed
+        };
+    }
+
+    private Border BuildUpdateBanner()
+    {
+        var contents = new Grid();
+        contents.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        contents.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        contents.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        contents.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        updateMessage.Margin = new Thickness(0, 0, 12, 0);
+        contents.Children.Add(updateMessage);
+        updateActionButton.Background = Accent;
+        updateActionButton.Foreground = Brushes.White;
+        updateActionButton.BorderBrush = Accent;
+        Grid.SetColumn(updateActionButton, 1);
+        contents.Children.Add(updateActionButton);
+        Grid.SetRow(downloadProgress, 1);
+        Grid.SetColumnSpan(downloadProgress, 2);
+        contents.Children.Add(downloadProgress);
+        return new Border
+        {
+            Background = ColorBrush("#EDF5FF"),
+            BorderBrush = ColorBrush("#DCEAFF"),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(10),
+            Padding = new Thickness(14, 10, 14, 10),
+            Margin = new Thickness(24, 0, 24, 12),
+            Child = contents,
+            Visibility = Visibility.Collapsed
+        };
+    }
+
+    private void UpdateResponsiveLayout()
+    {
+        if (workspace is null || compactNavigation is null || headerTools is null)
+            return;
+        double width = ActualWidth;
+        compactLayout = width < 1000;
+        workspace.Margin = new Thickness(compactLayout ? 16 : 24, 0, compactLayout ? 16 : 24, 16);
+        workspace.ColumnDefinitions[0].Width = compactLayout ? new GridLength(1, GridUnitType.Star) : new GridLength(318);
+        workspace.ColumnDefinitions[1].Width = new GridLength(compactLayout ? 0 : 20);
+        workspace.ColumnDefinitions[2].Width = compactLayout ? new GridLength(0) : new GridLength(1, GridUnitType.Star);
+        Grid.SetColumn(resultScroll, compactLayout ? 0 : 2);
+        compactNavigation.Visibility = compactLayout ? Visibility.Visible : Visibility.Collapsed;
+        inputPane.Visibility = compactLayout && showingResults ? Visibility.Collapsed : Visibility.Visible;
+        resultScroll.Visibility = compactLayout && !showingResults ? Visibility.Collapsed : Visibility.Visible;
+        parametersTab.Background = showingResults ? Brushes.Transparent : Brushes.White;
+        parametersTab.Foreground = showingResults ? Muted : Ink;
+        resultsTab.Background = showingResults ? Brushes.White : Brushes.Transparent;
+        resultsTab.Foreground = showingResults ? Ink : Muted;
+        bool stackedHeader = width < 1000;
+        Grid.SetColumnSpan(headerTitle, stackedHeader ? 2 : 1);
+        Grid.SetRow(headerTools, stackedHeader ? 1 : 0);
+        Grid.SetColumn(headerTools, stackedHeader ? 0 : 1);
+        Grid.SetColumnSpan(headerTools, stackedHeader ? 2 : 1);
+        headerTools.Margin = new Thickness(0, stackedHeader ? 12 : 0, 0, 0);
+        header.Margin = new Thickness(compactLayout ? 18 : 27, 18, compactLayout ? 18 : 27, 16);
+        DrawWaveform();
+    }
+
+    private void ShowCompactPane(bool results)
+    {
+        showingResults = results;
+        UpdateResponsiveLayout();
+        UpdateLayout();
+        DrawWaveform();
+    }
+
+    private async void OnFirstContentRendered(object? sender, EventArgs e)
+    {
+        ContentRendered -= OnFirstContentRendered;
+        FitWindowToWorkArea(center: true);
+        UpdateResponsiveLayout();
+        if (automaticUpdates)
+        {
+            updateTimer.Start();
+            await CheckForUpdatesAsync(false);
+        }
+    }
+
+    private async Task CheckForUpdatesAsync(bool manual)
+    {
+        if (checkingUpdates || downloadingUpdate || windowClosed)
+            return;
+        checkingUpdates = true;
+        checkUpdatesButton.IsEnabled = false;
+        updateActionButton.IsEnabled = false;
+        checkUpdatesButton.Content = "正在检查…";
+        try
+        {
+            var update = await updateService.CheckAsync(updateCancellation.Token);
+            if (windowClosed)
+                return;
+            DisplayUpdateCheckResult(update, manual);
+        }
+        catch (OperationCanceledException) when (updateCancellation.IsCancellationRequested)
+        {
+        }
+        catch (Exception exception)
+        {
+            if (manual && !windowClosed)
+            {
+                updateBanner.Visibility = Visibility.Visible;
+                updateMessage.Text = "检查更新失败，请检查网络连接后重试。";
+                updateMessage.ToolTip = exception.Message;
+                updateActionButton.Content = availableUpdate is null ? "重试检查" : "下载并更新";
+                updateActionButton.Visibility = Visibility.Visible;
+                updateActionButton.IsEnabled = true;
+            }
+        }
+        finally
+        {
+            checkingUpdates = false;
+            if (!windowClosed)
+            {
+                checkUpdatesButton.Content = "检查更新";
+                checkUpdatesButton.IsEnabled = !downloadingUpdate;
+                updateActionButton.IsEnabled = !downloadingUpdate;
+            }
+        }
+    }
+
+    private void DisplayUpdateCheckResult(AppUpdate? update, bool manual)
+    {
+        availableUpdate = update;
+        downloadProgress.Visibility = Visibility.Collapsed;
+        updateMessage.ToolTip = update?.ReleaseNotes;
+        if (update is not null)
+        {
+            updateBanner.Visibility = Visibility.Visible;
+            updateMessage.Text = $"发现新版本 {update.VersionText}，下载并安装后将自动重新启动。";
+            updateActionButton.Content = "下载并更新";
+            updateActionButton.Visibility = Visibility.Visible;
+            updateActionButton.IsEnabled = true;
+            return;
+        }
+        updateActionButton.Visibility = Visibility.Collapsed;
+        updateBanner.Visibility = manual ? Visibility.Visible : Visibility.Collapsed;
+        updateMessage.Text = manual ? $"当前已是最新版本 {UpdateService.CurrentVersion.ToString(3)}。" : "";
+    }
+
+    private async Task InstallUpdateAsync()
+    {
+        var update = availableUpdate;
+        if (update is null || downloadingUpdate || windowClosed)
+            return;
+        downloadingUpdate = true;
+        updateActionButton.IsEnabled = false;
+        checkUpdatesButton.IsEnabled = false;
+        downloadProgress.Value = 0;
+        downloadProgress.Visibility = Visibility.Visible;
+        updateMessage.Text = $"正在下载版本 {update.VersionText}，0%。";
+        try
+        {
+            var progress = new Progress<double>(value =>
+            {
+                if (windowClosed || !downloadingUpdate)
+                    return;
+                double percent = Math.Clamp(value, 0, 1) * 100;
+                downloadProgress.Value = percent;
+                updateMessage.Text = $"正在下载版本 {update.VersionText}，{percent:0}%。";
+            });
+            string installer = await updateService.DownloadAsync(update, progress, updateCancellation.Token);
+            updateCancellation.Token.ThrowIfCancellationRequested();
+            updateMessage.Text = "下载与校验完成，正在启动更新安装程序。";
+            UpdateService.LaunchInstaller(installer, update.Sha256);
+            Application.Current.Shutdown();
+        }
+        catch (OperationCanceledException) when (updateCancellation.IsCancellationRequested)
+        {
+        }
+        catch (Exception exception)
+        {
+            if (!windowClosed)
+            {
+                updateMessage.Text = "更新失败，可重试下载并校验安装包。";
+                updateMessage.ToolTip = exception.Message;
+                updateActionButton.Content = "重试更新";
+            }
+        }
+        finally
+        {
+            downloadingUpdate = false;
+            if (!windowClosed)
+            {
+                updateActionButton.IsEnabled = true;
+                checkUpdatesButton.IsEnabled = true;
+            }
+        }
     }
 
     private UIElement BuildInputs()
@@ -270,7 +561,7 @@ public sealed class MainWindow : Window
             Margin = new Thickness(0, 12, 0, 8)
         };
         results.Children.Add(formulas);
-        string version = typeof(MainWindow).Assembly.GetName().Version?.ToString(3) ?? "1.0.0";
+        string version = UpdateService.CurrentVersion.ToString(3);
         results.Children.Add(new TextBlock { Text = $"BUCK Calculator {version}  ·  Epiphany", FontSize = 11, Foreground = Muted, Margin = new Thickness(2, 14, 0, 4) });
         resultScroll.Content = results;
         resultScroll.HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled;
@@ -571,6 +862,11 @@ public sealed class MainWindow : Window
     {
         Directory.CreateDirectory(outputDirectory);
         var results = new List<string>();
+        FitWindowToWorkArea();
+        UpdateLayout();
+        AssertWindowFitsWorkArea(results, "startup");
+        double startupWidth = Width;
+        double startupHeight = Height;
         SetInputs(new BuckInputs());
         calculateButton.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
         if (CurrentResult is null || !exportButton.IsEnabled || CurrentResult.Inputs.VinMax != 16)
@@ -609,25 +905,76 @@ public sealed class MainWindow : Window
         results.Add("PASS current result exported as Markdown and UTF-8 CSV");
 
         resultScroll.ScrollToTop();
-        Width = 1360;
-        Height = 920;
+        ShowCompactPane(false);
         UpdateLayout();
         DrawWaveform();
         SaveScreenshot(System.IO.Path.Combine(outputDirectory, "desktop-default.png"));
+        ShowCompactPane(true);
         if (waveform.Children.Count == 0)
             throw new InvalidOperationException("默认工况电感波形未绘制。");
         resultScroll.ScrollToEnd();
         SaveScreenshot(System.IO.Path.Combine(outputDirectory, "desktop-details.png"));
         resultScroll.ScrollToTop();
-        Width = 1000;
-        Height = 700;
-        UpdateLayout();
-        DrawWaveform();
-        SaveScreenshot(System.IO.Path.Combine(outputDirectory, "desktop-small.png"));
+        CheckCompactLayout(outputDirectory, results, 900, 600, "desktop-small");
+        CheckCompactLayout(outputDirectory, results, 760, 540, "desktop-compact");
         resultScroll.ScrollToEnd();
         SaveScreenshot(System.IO.Path.Combine(outputDirectory, "desktop-small-details.png"));
-        results.Add("PASS large and minimum window layout rendered");
+        var previewVersion = new Version(UpdateService.CurrentVersion.Major, UpdateService.CurrentVersion.Minor, Math.Max(0, UpdateService.CurrentVersion.Build) + 1);
+        var previewUpdate = new AppUpdate(previewVersion, previewVersion.ToString(3),
+            new Uri("https://github.com/Epiphany-Lucky/buck-calculator/releases/download/ui-preview/installer.exe"),
+            new string('0', 64), 100_000_000, "更新通知布局烟测，执行期间禁用网络检查与安装。",
+            new Uri("https://github.com/Epiphany-Lucky/buck-calculator/releases"));
+        DisplayUpdateCheckResult(previewUpdate, false);
+        ShowCompactPane(false);
+        UpdateLayout();
+        AssertComputeButtonInClient();
+        if (updateBanner.Visibility != Visibility.Visible || updateActionButton.Visibility != Visibility.Visible || availableUpdate != previewUpdate)
+            throw new InvalidOperationException("可用更新通知未保持显示。");
+        SaveScreenshot(System.IO.Path.Combine(outputDirectory, "desktop-update-notice.png"));
+        results.Add("PASS persistent update notice and visible Calculate footer in compact window");
+        DisplayUpdateCheckResult(null, false);
+        UpdateLayout();
+        if (availableUpdate is not null || updateBanner.Visibility != Visibility.Collapsed || updateActionButton.Visibility != Visibility.Collapsed)
+            throw new InvalidOperationException("后台检查无可用更新后仍显示旧版本通知。");
+        results.Add("PASS automatic no-update response clears the previous persistent notice");
+        Width = startupWidth;
+        Height = startupHeight;
+        FitWindowToWorkArea();
+        UpdateLayout();
+        AssertWindowFitsWorkArea(results, "restored");
+        results.Add("PASS current monitor sizing, responsive layout, compact calculation and restored bounds");
         File.WriteAllLines(System.IO.Path.Combine(outputDirectory, "smoke-results.txt"), results, new UTF8Encoding(false));
+    }
+
+    private void CheckCompactLayout(string outputDirectory, List<string> results, double width, double height, string fileName)
+    {
+        Width = width;
+        Height = height;
+        FitWindowToWorkArea();
+        ShowCompactPane(false);
+        UpdateLayout();
+        AssertWindowFitsWorkArea(results, $"requested {width}x{height} DIP");
+        if (!compactLayout || inputPane.Visibility != Visibility.Visible || calculateButton.ActualHeight < 40)
+            throw new InvalidOperationException("紧凑窗口的参数页或计算按钮不可用。");
+        AssertComputeButtonInClient();
+        SaveScreenshot(System.IO.Path.Combine(outputDirectory, fileName + "-parameters.png"));
+        fields["IoutOperating"].Text = "1.8";
+        calculateButton.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+        UpdateLayout();
+        DrawWaveform();
+        UpdateLayout();
+        if (CurrentResult?.Inputs.IoutOperating != 1.8 || resultScroll.Visibility != Visibility.Visible || !exportButton.IsEnabled || waveform.Children.Count == 0)
+            throw new InvalidOperationException("紧凑窗口计算后结果页、导出或波形不可用。");
+        SaveScreenshot(System.IO.Path.Combine(outputDirectory, fileName + ".png"));
+        results.Add($"PASS compact calculation and visible footer at {Width:0}x{Height:0} DIP");
+    }
+
+    private void AssertComputeButtonInClient()
+    {
+        var content = (FrameworkElement)Content;
+        var buttonBounds = calculateButton.TransformToAncestor(content).TransformBounds(new Rect(calculateButton.RenderSize));
+        if (calculateButton.ActualHeight < 40 || buttonBounds.Top < 0 || buttonBounds.Bottom > content.ActualHeight || buttonBounds.Left < 0 || buttonBounds.Right > content.ActualWidth)
+            throw new InvalidOperationException("紧凑参数页的计算按钮超出客户区。");
     }
 
     private void SaveScreenshot(string path)
@@ -643,6 +990,132 @@ public sealed class MainWindow : Window
         using var stream = File.Create(path);
         encoder.Save(stream);
     }
+
+    private static Size GetStartupWorkArea()
+    {
+        if (GetCursorPos(out var point))
+        {
+            var monitor = MonitorFromPoint(point, 2);
+            var info = new MonitorInfo { Size = Marshal.SizeOf<MonitorInfo>() };
+            if (GetMonitorInfo(monitor, ref info))
+            {
+                double scale = GetDpiForMonitor(monitor, 0, out uint dpiX, out _) == 0 ? dpiX / 96.0 : 1;
+                return new Size(info.Work.Width / scale, info.Work.Height / scale);
+            }
+        }
+        return SystemParameters.WorkArea.Size;
+    }
+
+    private IntPtr WindowMessageHook(IntPtr handle, int message, IntPtr wParam, IntPtr lParam, ref bool handled)
+    {
+        if (message is 0x007E or 0x001A or 0x0232)
+            Dispatcher.BeginInvoke(new Action(() => FitWindowToWorkArea()));
+        return IntPtr.Zero;
+    }
+
+    private void FitWindowToWorkArea(bool center = false)
+    {
+        if (fittingWindow || windowClosed || WindowState != WindowState.Normal)
+            return;
+        IntPtr handle = new WindowInteropHelper(this).Handle;
+        if (handle == IntPtr.Zero || !GetWindowRect(handle, out var bounds))
+            return;
+        var monitor = MonitorFromWindow(handle, 2);
+        var info = new MonitorInfo { Size = Marshal.SizeOf<MonitorInfo>() };
+        if (!GetMonitorInfo(monitor, ref info))
+            return;
+
+        fittingWindow = true;
+        try
+        {
+            double scale = Math.Max(96, GetDpiForWindow(handle)) / 96.0;
+            var work = info.Work;
+            int availableWidth = Math.Max(1, work.Width - 16);
+            int availableHeight = Math.Max(1, work.Height - 16);
+            MinWidth = Math.Min(620, availableWidth / scale);
+            MinHeight = Math.Min(420, availableHeight / scale);
+            int width = Math.Min(bounds.Width, availableWidth);
+            int height = Math.Min(bounds.Height, availableHeight);
+            int x = center ? work.Left + (work.Width - width) / 2 : Math.Clamp(bounds.Left, work.Left, work.Right - width);
+            int y = center ? work.Top + (work.Height - height) / 2 : Math.Clamp(bounds.Top, work.Top, work.Bottom - height);
+            if (x != bounds.Left || y != bounds.Top || width != bounds.Width || height != bounds.Height)
+                SetWindowPos(handle, IntPtr.Zero, x, y, width, height, 0x0014);
+        }
+        finally
+        {
+            fittingWindow = false;
+        }
+        UpdateResponsiveLayout();
+    }
+
+    private void AssertWindowFitsWorkArea(List<string> results, string scenario)
+    {
+        IntPtr handle = new WindowInteropHelper(this).Handle;
+        if (!GetWindowRect(handle, out var bounds))
+            throw new InvalidOperationException("无法读取真实窗口外框。");
+        var info = new MonitorInfo { Size = Marshal.SizeOf<MonitorInfo>() };
+        if (!GetMonitorInfo(MonitorFromWindow(handle, 2), ref info))
+            throw new InvalidOperationException("无法读取窗口所在显示器工作区。");
+        if (bounds.Left < info.Work.Left || bounds.Top < info.Work.Top || bounds.Right > info.Work.Right || bounds.Bottom > info.Work.Bottom)
+            throw new InvalidOperationException($"{scenario} 窗口外框超出工作区，窗口 {bounds}，工作区 {info.Work}。");
+        results.Add($"PASS {scenario} native bounds {bounds} within work area {info.Work}, DPI {GetDpiForWindow(handle)}");
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativePoint
+    {
+        public int X;
+        public int Y;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeRect
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+        public readonly int Width => Right - Left;
+        public readonly int Height => Bottom - Top;
+        public override readonly string ToString() => $"({Left},{Top})–({Right},{Bottom})";
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MonitorInfo
+    {
+        public int Size;
+        public NativeRect Monitor;
+        public NativeRect Work;
+        public uint Flags;
+    }
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetCursorPos(out NativePoint point);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr MonitorFromPoint(NativePoint point, uint flags);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr MonitorFromWindow(IntPtr handle, uint flags);
+
+    [DllImport("user32.dll", CharSet = CharSet.Auto)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetMonitorInfo(IntPtr monitor, ref MonitorInfo info);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetWindowRect(IntPtr handle, out NativeRect bounds);
+
+    [DllImport("user32.dll")]
+    private static extern uint GetDpiForWindow(IntPtr handle);
+
+    [DllImport("shcore.dll")]
+    private static extern int GetDpiForMonitor(IntPtr monitor, int type, out uint dpiX, out uint dpiY);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetWindowPos(IntPtr handle, IntPtr insertAfter, int x, int y, int width, int height, uint flags);
 
     private static TextBlock SectionLabel(string text) => new()
     {

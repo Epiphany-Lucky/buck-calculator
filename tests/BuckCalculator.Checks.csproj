@@ -4,8 +4,10 @@
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="Program.cs" />
     <Compile Include="../src/BuckCalculator/Models.cs" Link="Models.cs" />
     <Compile Include="../src/BuckCalculator/BuckMath.cs" Link="BuckMath.cs" />
     <Compile Include="../src/BuckCalculator/ReportExporter.cs" Link="ReportExporter.cs" />

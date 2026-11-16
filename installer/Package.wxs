@@ -1,0 +1,71 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+  <Package Name="BUCK 计算器" Manufacturer="Epiphany-Lucky"
+           Version="$(var.Version)" Language="2052" Codepage="936"
+           Scope="perUser" InstallerVersion="500"
+           UpgradeCode="{C7BB44A5-16CA-4D44-B50F-63970CFC9D6E}">
+    <MajorUpgrade Schedule="afterInstallInitialize" AllowSameVersionUpgrades="yes"
+                  DowngradeErrorMessage="已安装较新版本的 BUCK 计算器，请使用当前版本或更高版本。" />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <Property Id="ARPCOMMENTS" Value="BUCK 电路参数计算、波形预览与计算报告" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/Epiphany-Lucky/buck-calculator" />
+    <Property Id="INSTALLFOLDER" Secure="yes">
+      <RegistrySearch Id="ExistingInstallFolder" Root="HKCU"
+                      Key="Software\Epiphany-Lucky\BuckCalculator" Name="InstallLocation" Type="raw" />
+    </Property>
+    <SetProperty Id="ARPINSTALLLOCATION" Value="[INSTALLFOLDER]" After="CostFinalize" />
+
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="UserProgramsFolder" Name="Programs">
+        <Directory Id="INSTALLFOLDER" Name="BuckCalculator">
+          <Component Id="ApplicationFiles" Guid="{1BDA014D-326B-47DB-AC29-B04F1D558D4F}">
+            <File Id="ApplicationExe" Source="$(var.PublishDirectory)\BuckCalculator.exe" />
+            <File Id="ApplicationReadme" Source="$(var.ProjectRoot)\README.md" />
+            <RegistryValue Root="HKCU" Key="Software\Epiphany-Lucky\BuckCalculator"
+                           Name="InstallLocation" Value="[INSTALLFOLDER]" Type="string" KeyPath="yes" />
+            <RemoveFolder Id="RemoveInstallationFolder" Directory="INSTALLFOLDER" On="uninstall" />
+          </Component>
+          <Directory Id="ApplicationDocsFolder" Name="docs">
+            <Component Id="ApplicationDocumentation" Guid="{4F39D1DC-13A3-4FAF-A1C8-D047F68266A0}">
+              <File Id="ApplicationScreenshot" Source="$(var.ProjectRoot)\docs\screenshot.png" />
+              <RegistryValue Root="HKCU" Key="Software\Epiphany-Lucky\BuckCalculator"
+                             Name="DocumentationInstalled" Value="1" Type="integer" KeyPath="yes" />
+              <RemoveFolder Id="RemoveDocumentationFolder" Directory="ApplicationDocsFolder" On="uninstall" />
+            </Component>
+          </Directory>
+        </Directory>
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="ApplicationMenuFolder" Name="BuckCalculator">
+        <Component Id="ApplicationShortcuts" Guid="{8ECCB405-37D8-4AD0-B44D-AC0FEA2DF9BC}">
+          <Shortcut Id="StartMenuShortcut" Name="BUCK 计算器" Target="[INSTALLFOLDER]BuckCalculator.exe"
+                    WorkingDirectory="INSTALLFOLDER" Description="BUCK 电路参数计算器" />
+          <Shortcut Id="DesktopShortcut" Directory="DesktopFolder" Name="BUCK 计算器"
+                    Target="[INSTALLFOLDER]BuckCalculator.exe" WorkingDirectory="INSTALLFOLDER"
+                    Description="BUCK 电路参数计算器" />
+          <RegistryValue Root="HKCU" Key="Software\Epiphany-Lucky\BuckCalculator"
+                         Name="ShortcutsInstalled" Value="1" Type="integer" KeyPath="yes" />
+          <RemoveFolder Id="RemoveStartMenuFolder" Directory="ApplicationMenuFolder" On="uninstall" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+    <StandardDirectory Id="DesktopFolder" />
+
+    <Feature Id="Complete" Title="BUCK 计算器" Level="1">
+      <ComponentRef Id="ApplicationFiles" />
+      <ComponentRef Id="ApplicationShortcuts" />
+      <ComponentRef Id="ApplicationDocumentation" />
+    </Feature>
+
+    <ui:WixUI Id="WixUI_InstallDir" InstallDirectory="INSTALLFOLDER" />
+    <UI>
+      <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="InstallDirDlg"
+               Order="100" Condition="NOT Installed" />
+      <Publish Dialog="InstallDirDlg" Control="Back" Event="NewDialog" Value="WelcomeDlg"
+               Order="100" />
+    </UI>
+  </Package>
+</Wix>

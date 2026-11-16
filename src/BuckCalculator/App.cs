@@ -10,18 +10,21 @@ public static class App
     public static int Main(string[] args)
     {
         string? smokeDirectory = null;
-        if (args.Length > 0)
-        {
-            if (args.Length != 2 || args[0] != "--smoke-test")
-                return 2;
-            smokeDirectory = Path.GetFullPath(args[1]);
-            Directory.CreateDirectory(smokeDirectory);
-        }
-
         try
         {
+            if (args.Length > 0 && args[0] == "--apply-update")
+                return UpdateService.RunInstaller(args);
+
+            if (args.Length > 0)
+            {
+                if (args.Length != 2 || args[0] != "--smoke-test")
+                    return 2;
+                smokeDirectory = Path.GetFullPath(args[1]);
+                Directory.CreateDirectory(smokeDirectory);
+            }
+
             var application = new Application();
-            var window = new MainWindow();
+            var window = new MainWindow(enableAutomaticUpdates: smokeDirectory is null);
             if (smokeDirectory is not null)
             {
                 string outputDirectory = smokeDirectory;
@@ -49,7 +52,7 @@ public static class App
             if (smokeDirectory is not null)
                 File.WriteAllText(Path.Combine(smokeDirectory, "smoke-error.txt"), exception.ToString());
             else
-                MessageBox.Show(exception.Message, "BUCK 计算器启动失败", MessageBoxButton.OK, MessageBoxImage.Error);
+                MessageBox.Show(exception.Message, args.FirstOrDefault() == "--apply-update" ? "BUCK 计算器更新失败" : "BUCK 计算器启动失败", MessageBoxButton.OK, MessageBoxImage.Error);
             return 1;
         }
     }
