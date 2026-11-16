@@ -23,7 +23,7 @@ jobs:
       - name: Check, publish and verify application
         shell: pwsh
         run: |
-          $version = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME.Substring(1) } else { '1.2.0' }
+          $version = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME.Substring(1) } else { '1.2.1' }
           ./scripts/build.ps1 -Version $version -VerifyInstall
       - name: Verify upgrade from the official 1.1.1 installer
         shell: pwsh
@@ -32,7 +32,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $version = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME.Substring(1) } else { '1.2.0' }
+          $version = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME.Substring(1) } else { '1.2.1' }
           $artifacts = Join-Path $env:GITHUB_WORKSPACE 'artifacts'
           $verification = Join-Path $artifacts 'installer-test'
           $fixtureEvidence = Join-Path $artifacts 'fixture-upgrade-verification'

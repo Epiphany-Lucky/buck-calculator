@@ -40,6 +40,18 @@ $nameQuery.Execute()
 $productName = $nameQuery.Fetch().StringData(1)
 $nameQuery.Close()
 if ([string]::IsNullOrWhiteSpace($productName)) { throw 'The MSI ProductName is missing.' }
+$shortcutQuery = $database.OpenView('SELECT `Shortcut`, `Target` FROM `Shortcut`')
+$shortcutQuery.Execute()
+$shortcutTargets = @{}
+while ($shortcutRecord = $shortcutQuery.Fetch()) {
+    $shortcutTargets[$shortcutRecord.StringData(1)] = $shortcutRecord.StringData(2)
+}
+$shortcutQuery.Close()
+foreach ($shortcutId in @('StartMenuShortcut', 'DesktopShortcut')) {
+    if ($shortcutTargets[$shortcutId] -ne '[INSTALLFOLDER]BuckCalculator.exe') {
+        throw "The MSI shortcut $shortcutId has an invalid target."
+    }
+}
 $installedByThisTest = $false
 $installedProductCode = $productCode
 $previousProductCode = $null
@@ -148,13 +160,6 @@ try {
         -not (Test-Path -LiteralPath $menuShortcut)) {
         throw 'The installed EXE or application shortcuts are missing.'
     }
-    $shortcutShell = New-Object -ComObject WScript.Shell
-    foreach ($shortcutPath in @($desktopShortcut, $menuShortcut)) {
-        $shortcutTarget = $shortcutShell.CreateShortcut($shortcutPath).TargetPath
-        if ([System.IO.Path]::GetFullPath($shortcutTarget) -ne [System.IO.Path]::GetFullPath($installedExe)) {
-            throw 'An installed application shortcut points outside the verified installation directory.'
-        }
-    }
     if ($installerApi.ProductInfo($productCode, 'AssignmentType') -ne '0') {
         throw 'The MSI did not register a per-user installation.'
     }
@@ -163,7 +168,7 @@ try {
         Where-Object { $_.DisplayName -eq $productName -and $_.UninstallString -like "*$productCode*" -and $_.SystemComponent -ne 1 } |
         Select-Object -First 1
     if (-not $uninstallEntry) { throw 'The visible Windows uninstall entry is missing or invalid.' }
-    $results.Add('PASS: per-user installation, custom install directory, registry path, shortcuts and uninstall entry')
+    $results.Add('PASS: per-user installation, custom install directory, registry path, MSI shortcut targets, installed shortcuts and uninstall entry')
 
     $smokeDirectory = Join-Path $testRoot 'smoke-test'
     $process = Start-Process -FilePath $installedExe -ArgumentList @('--smoke-test', ('"{0}"' -f $smokeDirectory)) `

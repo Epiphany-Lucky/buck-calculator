@@ -12,7 +12,7 @@
 
 | 附件 | 用途 |
 |---|---|
-| `BuckCalculator-v1.2.0-win-x64.msi` | 中文 Windows 安装程序 |
+| `BuckCalculator-v1.2.1-win-x64.msi` | 中文 Windows 安装程序 |
 | `SHA256SUMS.txt` | MSI 安装包的 SHA-256 校验值 |
 | `update.json` | 软件更新使用的版本、下载地址、大小与校验信息 |
 
@@ -23,7 +23,7 @@
 在 PowerShell 中执行以下命令可查看本地下载文件的校验值，并与 `SHA256SUMS.txt` 比较。
 
 ```powershell
-Get-FileHash -Algorithm SHA256 -LiteralPath '.\BuckCalculator-v1.2.0-win-x64.msi'
+Get-FileHash -Algorithm SHA256 -LiteralPath '.\BuckCalculator-v1.2.1-win-x64.msi'
 ```
 
 ## 软件内更新
@@ -164,7 +164,7 @@ dotnet run --project '.\src\BuckCalculator\BuckCalculator.csproj'
 执行计算、更新和界面验证，并构建安装包。
 
 ```powershell
-.\scripts\build.ps1 -Version 1.2.0
+.\scripts\build.ps1 -Version 1.2.1
 ```
 
 构建脚本先运行计算、报告与更新检查，再将 Windows x64 自包含应用封装进 WiX 6.0.2 MSI。程序运行所需的 .NET 运行时包含在应用中。输出位于 `artifacts`，包括 MSI、SHA-256 文件和基于本次 MSI 哈希及大小生成的 `update.json`，界面验证结果位于 `artifacts/smoke-test`。[Microsoft 自包含与单文件部署说明](https://learn.microsoft.com/en-us/dotnet/core/deploying/single-file/overview)
@@ -172,7 +172,7 @@ dotnet run --project '.\src\BuckCalculator\BuckCalculator.csproj'
 加入 `-VerifyInstall` 可进一步执行隔离安装验证。脚本生成内部使用的 1.0.9 测试版本，在 `artifacts/installer-test/app` 安装后调用软件更新助手升级到目标 MSI，检查原安装目录保留、旧产品注销、自动重启、降级阻止和卸载清理。检测到现有用户安装或快捷方式时会记录跳过结果。
 
 ```powershell
-.\scripts\build.ps1 -Version 1.2.0 -VerifyInstall
+.\scripts\build.ps1 -Version 1.2.1 -VerifyInstall
 ```
 
 也可以单独执行计算验证。
@@ -187,8 +187,8 @@ dotnet run --project '.\tests\BuckCalculator.UpdateChecks.csproj' --configuratio
 推送到 `main` 会运行构建验证并保留可下载的 Actions 安装包。推送 `v*` 标签会在验证成功后创建 GitHub Release，并上传 MSI、校验文件和静态更新清单。已存在的同名 Release 会更新安装附件。
 
 ```powershell
-git tag v1.2.0
-git push origin v1.2.0
+git tag v1.2.1
+git push origin v1.2.1
 ```
 
 ## 源码使用
